@@ -1,0 +1,145 @@
+--- a/AndroidManifest.xml
++++ b/AndroidManifest.xml
+@@ -1,4 +1,4 @@
+-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.codex.note8camera" android:versionCode="5" android:versionName="0.5">
++<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.codex.note8camera" android:versionCode="6" android:versionName="0.6">
+     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="28" />
+     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+--- a/src/com/codex/note8camera/Note8Hook.java
++++ b/src/com/codex/note8camera/Note8Hook.java
+@@ -154,6 +154,9 @@
+                 MediaPlayer player = feed.player;
+                 feed.rewinding = true;
+                 player.pause(); player.setVolume(0, 0);
++                feed.remoteRecording = RemoteRecording.armed();
++                feed.remoteStartSignaled = false;
++                player.setLooping(!feed.remoteRecording);
+                 player.setOnSeekCompleteListener(value -> {
+                     value.setOnSeekCompleteListener(null);
+                     if (!feed.disposed && feed.player == value) {
+@@ -188,7 +191,7 @@
+     }
+     static void finishRecording() {
+         Feed feed = activeSnapFeed;
+-        if (feed != null) WORKER.post(() -> { feed.recordArmed = false; feed.rewinding = false; });
++        if (feed != null) WORKER.post(() -> { feed.recordArmed = false; feed.rewinding = false; feed.remoteRecording = false; if(!feed.disposed && feed.player!=null)try{feed.player.setLooping(true);}catch(Exception ignored){} });
+     }
+ 
+     /** Drains real-camera buffers offscreen, while a player owns the visible surface. */
+@@ -208,6 +211,7 @@
+         volatile boolean videoReady;
+         boolean recordArmed;
+         boolean rewinding;
++        boolean remoteRecording, remoteStartSignaled;
+         long lastPresentationNs;
+         long presentationOffsetNs = Long.MIN_VALUE, previousTextureNs;
+         EGLDisplay display = EGL14.EGL_NO_DISPLAY;
+@@ -421,6 +425,12 @@
+                 EGLExt.eglPresentationTimeANDROID(display, imageWindow, lastPresentationNs);
+             }
+             if (!EGL14.eglSwapBuffers(display, imageWindow)) throw new IllegalStateException("Image present");
++            if (videoTexture != null && recordArmed && remoteRecording && !remoteStartSignaled && !rewinding) {
++                remoteStartSignaled = true;
++                // MediaPlayer.start returns before its first decoded frame arrives.
++                // Start the remote deadline only after presenting real video.
++                RemoteRecording.started();
++            }
+         }
+         void stopImage() {
+             WORKER.removeCallbacks(imageTick);
+--- /dev/null
++++ b/src/com/codex/note8camera/RemoteRecording.java
+@@ -0,0 +1,22 @@
++package com.codex.note8camera;
++import android.os.SystemClock;
++import java.io.*;
++import java.nio.charset.StandardCharsets;
++import org.json.JSONObject;
++/** Records a local monotonic start time only for an explicitly armed remote session. */
++final class RemoteRecording {
++    static boolean armed(){
++        try(FileInputStream in=new FileInputStream(MediaFiles.file("remote-record-request.json"))){byte[] b=new byte[4096];int n=in.read(b);if(n<1)return false;JSONObject o=new JSONObject(new String(b,0,n,StandardCharsets.UTF_8));long age=SystemClock.elapsedRealtime()-o.getLong("issuedMs");return age>=0&&age<20000&&o.optString("id").matches("[a-fA-F0-9-]{16,64}");}catch(Exception ignored){return false;}
++    }
++    static void started(){
++        File request=MediaFiles.file("remote-record-request.json");if(!request.isFile())return;
++        try(FileInputStream in=new FileInputStream(request)){
++            byte[] bytes=new byte[4096];int n=in.read(bytes);if(n<1)return;
++            JSONObject o=new JSONObject(new String(bytes,0,n,StandardCharsets.UTF_8));String id=o.getString("id");long now=SystemClock.elapsedRealtime(),age=now-o.getLong("issuedMs");
++            if(!id.matches("[a-fA-F0-9-]{16,64}")||age<0||age>20000)return;
++            File temp=MediaFiles.file("remote-record-start.json.tmp");
++            try(FileOutputStream out=new FileOutputStream(temp)){out.write(new JSONObject().put("id",id).put("startedMs",now).toString().getBytes(StandardCharsets.UTF_8));}
++            android.system.Os.rename(temp.getPath(),MediaFiles.file("remote-record-start.json").getPath());
++        }catch(Exception e){de.robv.android.xposed.XposedBridge.log("[Note8Remote] Recording start signal unavailable");}
++    }
++}
+--- a/src/com/codex/note8camera/SnapCamera.java
++++ b/src/com/codex/note8camera/SnapCamera.java
+@@ -9,6 +9,7 @@
+ 
+ final class SnapCamera {
+     private static final ThreadLocal<Boolean> REPLACEMENT = new ThreadLocal<>();
++    private static final ThreadLocal<int[]> CAPTURE_SIZE = new ThreadLocal<>();
+     static int[] prepareTexture(Object camera, SurfaceTexture texture) {
+         try {
+             Camera.Size size = ((Camera) camera).getParameters().getPreviewSize();
+@@ -29,7 +30,7 @@
+             XposedBridge.hookAllMethods(camera, method, new XC_MethodHook() {
+                 @Override protected void beforeHookedMethod(MethodHookParam p) {
+                     XposedBridge.log("[Note8Snap] Camera1 " + p.method.getName());
+-                    if ("takePicture".equals(p.method.getName()) && p.args.length == 4 && MediaFiles.active() && MediaFiles.imageMode()) {
++                    if ("takePicture".equals(p.method.getName()) && p.args.length == 4 && MediaFiles.active()) {
+                         int last = p.args.length - 1;
+                         if (last >= 0 && p.args[last] instanceof Camera.PictureCallback) {
+                             Camera.PictureCallback callback = (Camera.PictureCallback) p.args[last];
+@@ -37,11 +38,15 @@
+                             byte[] replacement;
+                             try { replacement = jpeg(); }
+                             catch (Throwable error) { XposedBridge.log("[Note8Snap] JPEG source failed: " + error); p.setThrowable(new IllegalStateException("Replacement image cannot be read", error)); return; }
++                            BitmapFactory.Options bounds = new BitmapFactory.Options(); bounds.inJustDecodeBounds = true;
++                            BitmapFactory.decodeByteArray(replacement, 0, replacement.length, bounds);
++                            final int[] dimensions = new int[]{bounds.outWidth, bounds.outHeight};
+                             p.args[last] = (Camera.PictureCallback) (bytes, device) -> {
+                                 XposedBridge.log("[Note8Snap] Delivered replacement JPEG: " + replacement.length + " bytes");
+                                 REPLACEMENT.set(true);
++                                CAPTURE_SIZE.set(dimensions);
+                                 try { callback.onPictureTaken(replacement, device); }
+-                                finally { REPLACEMENT.remove(); }
++                                finally { REPLACEMENT.remove(); CAPTURE_SIZE.remove(); }
+                             };
+                         }
+                     }
+@@ -63,10 +68,10 @@
+             XposedBridge.hookAllConstructors(resultWriter, new XC_MethodHook() {
+                 @Override protected void beforeHookedMethod(MethodHookParam p) {
+                     if (!Boolean.TRUE.equals(REPLACEMENT.get()) || p.args.length != 5) return;
+-                    BitmapFactory.Options info = MediaFiles.originalInfo();
+-                    p.args[3] = XposedHelpers.newInstance(resolution, info.outWidth, info.outHeight);
++                    int[] dimensions = CAPTURE_SIZE.get(); if(dimensions == null || dimensions[0] <= 0 || dimensions[1] <= 0) return;
++                    p.args[3] = XposedHelpers.newInstance(resolution, dimensions[0], dimensions[1]);
+                     p.args[4] = XposedHelpers.newInstance(transform, 0, true, false);
+-                    XposedBridge.log("[Note8Snap] Preserving capture dimensions " + info.outWidth + "x" + info.outHeight);
++                    XposedBridge.log("[Note8Snap] Preserving capture dimensions " + dimensions[0] + "x" + dimensions[1]);
+                 }
+             });
+             // Snapchat's downstream capture metadata otherwise rotates/mirrors
+@@ -84,6 +89,19 @@
+         } catch (Throwable error) { XposedBridge.log("[Note8Snap] Capture adapter unavailable: " + error); }
+     }
+     private static byte[] jpeg() throws IOException {
++        if (!MediaFiles.imageMode()) {
++            // A short press while video mode is active must never export the
++            // physical sensor JPEG. Supply the selected video's first frame.
++            android.media.MediaMetadataRetriever reader = new android.media.MediaMetadataRetriever();
++            Bitmap frame = null;
++            try(ByteArrayOutputStream output = new ByteArrayOutputStream()) {
++                reader.setDataSource(MediaFiles.selected().getPath());
++                frame = reader.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
++                if(frame == null || !frame.compress(Bitmap.CompressFormat.JPEG,100,output)) throw new IOException("Cannot decode selected video frame");
++                return output.toByteArray();
++            } catch(RuntimeException error) { throw new IOException("Cannot read selected video",error); }
++            finally { if(frame!=null)frame.recycle(); try{reader.release();}catch(Exception ignored){} }
++        }
+         BitmapFactory.Options info = MediaFiles.originalInfo();
+         if ("image/jpeg".equals(info.outMimeType)) {
+             try (InputStream input = new FileInputStream(MediaFiles.originalImage()); ByteArrayOutputStream output = new ByteArrayOutputStream()) {

@@ -1,0 +1,98 @@
+name: Build iPhone app
+on:
+  workflow_dispatch:
+    inputs:
+      signing:
+        description: 'Build unsigned IPA, or sign with your Apple certificate and profile'
+        required: true
+        type: choice
+        options: [unsigned, signed]
+        default: unsigned
+      bundle_id:
+        description: 'Must match the provisioning profile for a signed build'
+        required: true
+        default: com.mohammad.note8remote
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: iphone-build
+  cancel-in-progress: true
+jobs:
+  build:
+    # Public standard runners are free. Never silently consume paid private minutes.
+    if: github.event.repository.private == false
+    runs-on: macos-15
+    timeout-minutes: 18
+    env:
+      BUNDLE_ID: ${{ inputs.bundle_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate and validate project
+        run: |
+          python3 ios/generate_project.py
+          python3 -c 'import os,re; assert re.fullmatch(r"[A-Za-z0-9.-]{4,128}",os.environ["BUNDLE_ID"])'
+          plutil -lint ios/Note8Remote/Info.plist
+      - name: Build device application
+        run: |
+          xcodebuild -project ios/Note8Remote.xcodeproj -scheme Note8Remote -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/device CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" build > build-device.log 2>&1 || { tail -100 build-device.log; exit 1; }
+          mkdir -p build/package/Payload
+          cp -R build/device/Build/Products/Release-iphoneos/Note8Remote.app build/package/Payload/
+      - name: Optional Apple signing
+        if: inputs.signing == 'signed'
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_P12_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.APPLE_PROFILE_BASE64 }}
+        run: |
+          python3 ios/sign_app.py
+      - name: Package IPA
+        env:
+          SIGNING_MODE: ${{ inputs.signing }}
+          ARTIFACT_PASSWORD: ${{ secrets.ARTIFACT_PASSWORD }}
+        run: |
+          cd build/package
+          ditto -c -k --sequesterRsrc --keepParent Payload "../Note8Remote-${SIGNING_MODE}.ipa"
+          if [ "$SIGNING_MODE" = signed ]; then
+            python3 -c 'import os; assert len(os.environ.get("ARTIFACT_PASSWORD","")) >= 20, "Set ARTIFACT_PASSWORD to at least 20 characters"'
+            openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 -in ../Note8Remote-signed.ipa -out ../Note8Remote-signed.ipa.enc -pass env:ARTIFACT_PASSWORD
+            rm ../Note8Remote-signed.ipa
+          fi
+      - name: Build simulator and take screenshots
+        run: |
+          xcodebuild -project ios/Note8Remote.xcodeproj -scheme Note8Remote -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build/simulator CODE_SIGNING_ALLOWED=NO build > build-simulator.log 2>&1 || { tail -100 build-simulator.log; exit 1; }
+          DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import sys,json; ds=[d for v in json.load(sys.stdin)["devices"].values() for d in v if d["name"].startswith("iPhone")]; print(next((d["udid"] for d in ds if "16" in d["name"]),ds[0]["udid"]))')
+          xcrun simctl boot "$DEVICE" || true
+          xcrun simctl bootstatus "$DEVICE" -b
+          xcrun simctl install "$DEVICE" build/simulator/Build/Products/Debug-iphonesimulator/Note8Remote.app
+          xcrun simctl launch "$DEVICE" com.mohammad.note8remote
+          sleep 3
+          mkdir -p build/screenshots
+          xcrun simctl io "$DEVICE" screenshot build/screenshots/connection-light.png
+          xcrun simctl ui "$DEVICE" appearance dark
+          sleep 2
+          xcrun simctl io "$DEVICE" screenshot build/screenshots/connection-dark.png
+          xcrun simctl terminate "$DEVICE" com.mohammad.note8remote
+          xcrun simctl launch "$DEVICE" com.mohammad.note8remote -UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityXXXL
+          sleep 2
+          xcrun simctl io "$DEVICE" screenshot build/screenshots/connection-large-text.png
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Note8Remote-${{ inputs.signing }}
+          path: |
+            build/*.ipa
+            build/*.ipa.enc
+            build/screenshots/*.png
+          retention-days: 3
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: build-*.log
+          retention-days: 1
+      - name: Remove signing material
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/note8-signing.keychain-db" ]; then security delete-keychain "$RUNNER_TEMP/note8-signing.keychain-db"; fi
+          python3 -c 'import pathlib,os; p=pathlib.Path(os.environ["RUNNER_TEMP"]); [f.unlink(missing_ok=True) for name in ("note8-cert.p12","note8-profile.mobileprovision","note8-entitlements.plist") if (f:=p/name).exists()]'

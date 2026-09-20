@@ -1,0 +1,47 @@
+// !$*UTF8*$!
+{ archiveVersion = 1; classes = {}; objectVersion = 56; objects = {
+D3CC244FE3B63DFF710117B7 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Note8Remote/ContentView.swift"; sourceTree = "<group>"; };
+2A8F5CFFD87674FB2B9862C3 = { isa = PBXBuildFile; fileRef = D3CC244FE3B63DFF710117B7; };
+998569DD4D0E60247623F7FA = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Note8Remote/Keychain.swift"; sourceTree = "<group>"; };
+D074EFDFE802A6730C6DE947 = { isa = PBXBuildFile; fileRef = 998569DD4D0E60247623F7FA; };
+F13F244543812445227C14CC = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Note8Remote/MediaPicker.swift"; sourceTree = "<group>"; };
+B1B5ABD3B9A4C9A93C6F0C72 = { isa = PBXBuildFile; fileRef = F13F244543812445227C14CC; };
+F41BC654BC5C28A6EEEBA7B7 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Note8Remote/RemoteModel.swift"; sourceTree = "<group>"; };
+A6C833B06627A3CBA2C754A2 = { isa = PBXBuildFile; fileRef = F41BC654BC5C28A6EEEBA7B7; };
+E55BB9E1056D2F853BB4E66A = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Note8Remote/TouchScreen.swift"; sourceTree = "<group>"; };
+D773156953E2EF770CF85911 = { isa = PBXBuildFile; fileRef = E55BB9E1056D2F853BB4E66A; };
+3685E330EC5277A9DD5661C6 = { isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Note8Remote/Assets.xcassets; sourceTree = "<group>"; };
+CF8A4D27E1C506A7C75A76BE = { isa = PBXBuildFile; fileRef = 3685E330EC5277A9DD5661C6; };
+96ED5C5789B174A01557791C = { isa = PBXFileReference; lastKnownFileType = text.xml; path = Note8Remote/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+07B760A8663938679E1BD8F1 = { isa = PBXBuildFile; fileRef = 96ED5C5789B174A01557791C; };
+38A007151ABE87CC01A5B6E9 = { isa = PBXFileReference; explicitFileType = wrapper.application; path = Note8Remote.app; sourceTree = BUILT_PRODUCTS_DIR; };
+FBDC4F23F93125BBEEAE800C = { isa = PBXGroup; children = (38A007151ABE87CC01A5B6E9,); name = Products; sourceTree = "<group>"; };
+325F10A6957A34D66CB8C0E4 = { isa = PBXGroup; children = (D3CC244FE3B63DFF710117B7,998569DD4D0E60247623F7FA,F13F244543812445227C14CC,F41BC654BC5C28A6EEEBA7B7,E55BB9E1056D2F853BB4E66A,3685E330EC5277A9DD5661C6,96ED5C5789B174A01557791C,FBDC4F23F93125BBEEAE800C,); sourceTree = "<group>"; };
+BCE16DD0260827ECF338C787 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (2A8F5CFFD87674FB2B9862C3,D074EFDFE802A6730C6DE947,B1B5ABD3B9A4C9A93C6F0C72,A6C833B06627A3CBA2C754A2,D773156953E2EF770CF85911,); runOnlyForDeploymentPostprocessing = 0; };
+0189424A5A60FED329FA868E = { isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (CF8A4D27E1C506A7C75A76BE,07B760A8663938679E1BD8F1,); runOnlyForDeploymentPostprocessing = 0; };
+7561BFB015D8F536760CB671 = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+A5A76368A6E498576C4EEF98 = { isa = XCBuildConfiguration; name = Debug; buildSettings = {
+        PRODUCT_NAME = Note8Remote; PRODUCT_BUNDLE_IDENTIFIER = com.mohammad.note8remote;
+        INFOPLIST_FILE = Note8Remote/Info.plist; GENERATE_INFOPLIST_FILE = NO;
+        SWIFT_VERSION = 5.0; IPHONEOS_DEPLOYMENT_TARGET = 16.0; TARGETED_DEVICE_FAMILY = "1,2";
+        ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+        CODE_SIGN_STYLE = Automatic; ENABLE_USER_SCRIPT_SANDBOXING = YES;
+        LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+        SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+    }; };
+393D46F43650EFF47D010A6A = { isa = XCBuildConfiguration; name = Debug; buildSettings = { SDKROOT = iphoneos; CLANG_ENABLE_MODULES = YES; }; };
+A5BD66D3C03A0FAF1A0386D5 = { isa = XCBuildConfiguration; name = Release; buildSettings = {
+        PRODUCT_NAME = Note8Remote; PRODUCT_BUNDLE_IDENTIFIER = com.mohammad.note8remote;
+        INFOPLIST_FILE = Note8Remote/Info.plist; GENERATE_INFOPLIST_FILE = NO;
+        SWIFT_VERSION = 5.0; IPHONEOS_DEPLOYMENT_TARGET = 16.0; TARGETED_DEVICE_FAMILY = "1,2";
+        ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon; ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+        CODE_SIGN_STYLE = Automatic; ENABLE_USER_SCRIPT_SANDBOXING = YES;
+        LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+        SWIFT_OPTIMIZATION_LEVEL = "-O";
+    }; };
+C08F1534F06EA574653FD4BB = { isa = XCBuildConfiguration; name = Release; buildSettings = { SDKROOT = iphoneos; CLANG_ENABLE_MODULES = YES; }; };
+E30856D4D988D9571DE7D610 = { isa = XCConfigurationList; buildConfigurations = (A5A76368A6E498576C4EEF98,A5BD66D3C03A0FAF1A0386D5,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+95AC892C3AACDECFBDAED97E = { isa = XCConfigurationList; buildConfigurations = (393D46F43650EFF47D010A6A,C08F1534F06EA574653FD4BB,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+0E8A3AD980EC179856012B7E = { isa = PBXNativeTarget; buildConfigurationList = E30856D4D988D9571DE7D610; buildPhases = (BCE16DD0260827ECF338C787,7561BFB015D8F536760CB671,0189424A5A60FED329FA868E,); buildRules = (); dependencies = (); name = Note8Remote; productName = Note8Remote; productReference = 38A007151ABE87CC01A5B6E9; productType = "com.apple.product-type.application"; };
+98F54143AB4E86B28C3AFEE0 = { isa = PBXProject; attributes = { BuildIndependentTargetsInParallel = YES; LastUpgradeCheck = 1600; }; buildConfigurationList = 95AC892C3AACDECFBDAED97E; compatibilityVersion = "Xcode 14.0"; developmentRegion = ar; knownRegions = (ar,en,Base,); mainGroup = 325F10A6957A34D66CB8C0E4; productRefGroup = FBDC4F23F93125BBEEAE800C; projectDirPath = ""; projectRoot = ""; targets = (0E8A3AD980EC179856012B7E,); };
+}; rootObject = 98F54143AB4E86B28C3AFEE0; }

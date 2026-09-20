@@ -1,0 +1,17 @@
+private/
+probe/
+**/build/
+**/development-signing.jks
+*.p12
+*.mobileprovision
+*.p8
+*.ipa
+*.apk
+*.xcarchive
+DerivedData/
+xcuserdata/
+.DS_Store
+__pycache__/
+*.pyc
+.firecrawl/
+STATE.md
