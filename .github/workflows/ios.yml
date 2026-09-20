@@ -77,6 +77,18 @@ jobs:
           xcrun simctl launch "$DEVICE" com.mohammad.note8remote -UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityXXXL
           sleep 2
           xcrun simctl io "$DEVICE" screenshot build/screenshots/connection-large-text.png
+          xcrun simctl terminate "$DEVICE" com.mohammad.note8remote
+          xcrun simctl launch "$DEVICE" com.mohammad.note8remote --screen-preview
+          sleep 2
+          xcrun simctl io "$DEVICE" screenshot build/screenshots/control-fullscreen.png
+          xcrun simctl terminate "$DEVICE" com.mohammad.note8remote
+          xcrun simctl launch "$DEVICE" com.mohammad.note8remote --screen-preview --show-tools
+          sleep 2
+          xcrun simctl io "$DEVICE" screenshot build/screenshots/control-tools.png
+          xcrun simctl terminate "$DEVICE" com.mohammad.note8remote
+          xcrun simctl launch "$DEVICE" com.mohammad.note8remote --screen-preview -UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityXXXL
+          sleep 2
+          xcrun simctl io "$DEVICE" screenshot build/screenshots/control-fullscreen-large-text.png
       - uses: actions/upload-artifact@v4
         with:
           name: Note8Remote-${{ inputs.signing }}

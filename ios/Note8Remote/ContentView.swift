@@ -5,6 +5,7 @@ struct ContentView: View {
     @StateObject private var model = RemoteModel()
     @Environment(\.scenePhase) private var scenePhase
     @State private var tab = 0
+    @State private var fullScreen = true
     @State private var picker = false
     @State private var calibrating = false
     @State private var showingText = false
@@ -16,14 +17,11 @@ struct ContentView: View {
     private let clock = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     @State private var now = Date()
     var body: some View {
-        TabView(selection: $tab) {
-            NavigationStack { screen.navigationTitle("النوت 8").navigationBarTitleDisplayMode(.inline) }
-                .tabItem { Label("التحكم", systemImage: "iphone.gen1") }.tag(0)
-            NavigationStack { media.navigationTitle("المقاطع") }
-                .tabItem { Label("المقاطع", systemImage: "photo.on.rectangle") }.tag(1)
-            NavigationStack { settings.navigationTitle("الاتصال") }
-                .tabItem { Label("الاتصال", systemImage: "link") }.tag(2)
+        ZStack {
+            if tab == 0 && fullScreen { immersiveScreen }
+            else { tabs }
         }
+        .statusBarHidden(tab == 0 && fullScreen)
         .tint(Color.accentColor)
         .environment(\.layoutDirection, .rightToLeft)
         .sheet(isPresented: $picker) { MediaPicker { result in picker = false; switch result { case .success(let file): model.choose(file.0, kind: file.1); case .failure(let error): model.error = error.localizedDescription } } }
@@ -36,12 +34,76 @@ struct ContentView: View {
             }.environment(\.layoutDirection, .rightToLeft)
         }
         .onOpenURL { url in model.importPairing(url); tab = 2 }
-        .onAppear { if model.host.isEmpty { tab = 2 } else { model.resumeSavedConnection() } }
+        .onAppear {
+            #if targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--screen-preview") {
+                model.image = SimulatorScreen.image()
+                model.connected = true
+                model.lastFrame = .distantFuture
+                tab = 0
+                fullScreen = !ProcessInfo.processInfo.arguments.contains("--show-tools")
+                return
+            }
+            #endif
+            if model.host.isEmpty { tab = 2 } else { model.resumeSavedConnection() }
+        }
         .onChange(of: scenePhase) { phase in if phase == .background { model.background() } else if phase == .active { model.resumeSavedConnection() } }
         .onChange(of: model.host) { _ in if model.connected { model.disconnect() } }
         .onChange(of: model.token) { _ in if model.connected { model.disconnect() } }
-        .onChange(of: tab) { model.setViewingScreen($0 == 0) }
+        .onChange(of: tab) { value in
+            model.setViewingScreen(value == 0)
+            if value == 0 { fullScreen = true }
+        }
         .onReceive(clock) { now = $0 }
+    }
+    var tabs: some View {
+        TabView(selection: $tab) {
+            NavigationStack { screen.navigationTitle("النوت 8").navigationBarTitleDisplayMode(.inline) }
+                .tabItem { Label("التحكم", systemImage: "iphone.gen1") }.tag(0)
+            NavigationStack { media.navigationTitle("المقاطع") }
+                .tabItem { Label("المقاطع", systemImage: "photo.on.rectangle") }.tag(1)
+            NavigationStack { settings.navigationTitle("الاتصال") }
+                .tabItem { Label("الاتصال", systemImage: "link") }.tag(2)
+        }
+    }
+    var remoteDisplay: some View {
+            GeometryReader { proxy in
+                ZStack {
+                    TouchScreen(image: model.image, enabled: !model.stale && !model.recording, calibrating: calibrating, point: { p in shutterX = p.x; shutterY = p.y; calibrated = true; calibrating = false }, touch: { action, p in model.enqueue(["type": "touch", "action": action, "x": p.x, "y": p.y]) })
+                    if model.image == nil {
+                        VStack(spacing: 16) {
+                            Image(systemName: "iphone.gen1.radiowaves.left.and.right").font(.system(size: 42))
+                            Text("ستظهر شاشة النوت هنا").font(.headline)
+                            Text("شغّل الخدمة وTailscale على الهاتفين، ثم اتصل.").font(.subheadline).multilineTextAlignment(.center)
+                            Button("إعداد الاتصال") { tab = 2 }.buttonStyle(.borderedProminent)
+                        }.foregroundStyle(.white).padding(24)
+                    } else if model.stale {
+                        Text("الصورة متوقفة — جارٍ إعادة الاتصال").font(.callout.weight(.semibold)).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+                    }
+                    if calibrating { VStack { Text("المس وسط زر التسجيل داخل سناب مرة واحدة لتحديد موضعه.").font(.callout.weight(.medium)).padding().background(.regularMaterial); Spacer() }.allowsHitTesting(false) }
+                }.frame(width: proxy.size.width, height: proxy.size.height).background(.black)
+            }
+    }
+    var immersiveScreen: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            // Keep the whole remote display inside the safe area so its Android
+            // navigation buttons remain reachable around the iPhone sensor housing.
+            remoteDisplay
+            Button { fullScreen = false } label: {
+                Image(systemName: "chevron.backward")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(.black.opacity(0.8), in: Circle())
+                    .overlay(Circle().strokeBorder(.white.opacity(0.35)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("الرجوع إلى أدوات التحكم")
+            .padding(8)
+        }
+        .persistentSystemOverlays(.hidden)
     }
     var status: some View {
         HStack(spacing: 8) {
@@ -61,22 +123,11 @@ struct ContentView: View {
         VStack(spacing: 10) {
             status
             errorBanner
-            GeometryReader { proxy in
-                ZStack {
-                    TouchScreen(image: model.image, enabled: !model.stale && !model.recording, calibrating: calibrating, point: { p in shutterX = p.x; shutterY = p.y; calibrated = true; calibrating = false }, touch: { action, p in model.enqueue(["type": "touch", "action": action, "x": p.x, "y": p.y]) })
-                    if model.image == nil {
-                        VStack(spacing: 16) {
-                            Image(systemName: "iphone.gen1.radiowaves.left.and.right").font(.system(size: 42))
-                            Text("ستظهر شاشة النوت هنا").font(.headline)
-                            Text("شغّل الخدمة وTailscale على الهاتفين، ثم اتصل.").font(.subheadline).multilineTextAlignment(.center)
-                            Button("إعداد الاتصال") { tab = 2 }.buttonStyle(.borderedProminent)
-                        }.foregroundStyle(.white).padding(24)
-                    } else if model.stale {
-                        Text("الصورة متوقفة — جارٍ إعادة الاتصال").font(.callout.weight(.semibold)).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                    }
-                    if calibrating { VStack { Text("المس وسط زر التسجيل داخل سناب مرة واحدة لتحديد موضعه.").font(.callout.weight(.medium)).padding().background(.regularMaterial); Spacer() }.allowsHitTesting(false) }
-                }.frame(width: proxy.size.width, height: proxy.size.height).background(.black).clipShape(RoundedRectangle(cornerRadius: 16))
-            }
+            remoteDisplay.clipShape(RoundedRectangle(cornerRadius: 16))
+            Button { fullScreen = true } label: {
+                Label("ملء الشاشة", systemImage: "arrow.up.left.and.arrow.down.right")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }.buttonStyle(.bordered)
             HStack(spacing: 8) {
                 tool("رجوع", "chevron.backward") { model.command(["type": "key", "key": 4]) }
                 tool("الرئيسية", "house") { model.command(["type": "key", "key": 3]) }
@@ -136,7 +187,7 @@ struct ContentView: View {
                 Text("تُخفّض معاينة الشاشة أثناء الرفع. اختيار سرعة أقل يناسب الاتصالات الضعيفة. جودة الملف الأصلي ثابتة في جميع الخيارات.").font(.footnote).foregroundStyle(.secondary)
             }
             Section("التسجيل") {
-                Button("إعادة تحديد موضع زر تسجيل سناب") { calibrated = false; calibrating = true; tab = 0 }
+                Button("إعادة تحديد موضع زر تسجيل سناب") { calibrated = false; calibrating = true; fullScreen = true; tab = 0 }
                 Text("التوقف يُنفّذ على النوت بحسب مدة الملف وبداية التسجيل الفعلية. تغيّر شكل واجهة سناب يستلزم تحديد الزر مجدداً. صوت شاشة النوت لا يُبث مباشرة في هذه النسخة.").font(.footnote).foregroundStyle(.secondary)
             }
             Section { Button("قطع الاتصال", role: .destructive) { model.disconnect() } }

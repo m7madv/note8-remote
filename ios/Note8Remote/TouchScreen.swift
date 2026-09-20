@@ -8,7 +8,9 @@ struct TouchScreen: UIViewRepresentable {
     var point: (CGPoint) -> Void
     var touch: (Int, CGPoint) -> Void
     func makeUIView(context: Context) -> TouchSurface { TouchSurface() }
+    static func dismantleUIView(_ uiView: TouchSurface, coordinator: ()) { uiView.cancelActiveTouch() }
     func updateUIView(_ uiView: TouchSurface, context: Context) {
+        if !enabled || uiView.calibrating != calibrating { uiView.cancelActiveTouch() }
         uiView.imageView.image = image; uiView.enabled = enabled; uiView.calibrating = calibrating; uiView.onPoint = point; uiView.onTouch = touch
     }
 }
@@ -27,10 +29,17 @@ final class TouchSurface: UIView {
         addSubview(imageView); isMultipleTouchEnabled = false
         semanticContentAttribute = .forceLeftToRight
         accessibilityLabel = "شاشة النوت للتحكم باللمس"
-        accessibilityHint = "تتوفر أزرار الرئيسية والرجوع والتسجيل أسفل الشاشة."
+        accessibilityHint = "في العرض الكامل، استخدم زر الرجوع الصغير لإظهار أدوات التحكم."
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unsupported") }
-    override func layoutSubviews() { super.layoutSubviews(); imageView.frame = bounds }
+    func cancelActiveTouch() {
+        guard pressed else { return }
+        pressed = false; onTouch?(3, last)
+    }
+    override func layoutSubviews() {
+        if imageView.frame.size != bounds.size { cancelActiveTouch() }
+        super.layoutSubviews(); imageView.frame = bounds
+    }
     func position(_ touch: UITouch, clamp: Bool = false) -> CGPoint? {
         guard let image = imageView.image, image.size.width > 0, image.size.height > 0 else { return nil }
         let ratio = min(bounds.width / image.size.width, bounds.height / image.size.height)
@@ -56,5 +65,5 @@ final class TouchSurface: UIView {
         if let touch = touches.first, let p = position(touch, clamp: true) { last = p }
         onTouch?(1, last)
     }
-    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { if pressed { pressed = false; onTouch?(3, last) } }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) { cancelActiveTouch() }
 }
