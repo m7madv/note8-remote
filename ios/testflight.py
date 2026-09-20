@@ -14,7 +14,17 @@ from pathlib import Path
 def run(*args):
     result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     if result.returncode:
-        # Never echo commands, profile identifiers or authentication material.
+        # Emit only diagnostic error lines, with credential values and identities removed.
+        output = result.stdout.decode('utf-8', errors='replace')
+        for name in ('CERTIFICATE_BASE64', 'CERTIFICATE_PASSWORD', 'PROFILE_BASE64', 'ASC_KEY_BASE64', 'ASC_KEY_ID', 'ASC_ISSUER_ID'):
+            value = os.environ.get(name)
+            if value:
+                output = output.replace(value, '[redacted]')
+        for line in output.splitlines():
+            if 'error:' in line.lower() or 'validation failed' in line.lower():
+                line = re.sub(r'[\w.+-]+@[\w.-]+', '[email]', line)
+                line = re.sub(r'\b[A-Fa-f0-9-]{36,}\b', '[identifier]', line)
+                print(line[:1200], flush=True)
         raise RuntimeError(f'{Path(args[0]).name} failed with exit code {result.returncode}')
     return result.stdout
 
