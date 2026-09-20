@@ -34,6 +34,10 @@ jobs:
           python3 ios/generate_project.py
           python3 -c 'import os,re; assert re.fullmatch(r"[A-Za-z0-9.-]{4,128}",os.environ["BUNDLE_ID"])'
           plutil -lint ios/Note8Remote/Info.plist
+      - name: Verify AAC decoding and natural playback speed
+        run: |
+          xcrun swiftc ios/Note8Remote/AACDecoder.swift ios/tests/main.swift -o /tmp/note8-audio-test
+          /tmp/note8-audio-test ios/tests/tone.aac
       - name: Build device application
         run: |
           xcodebuild -project ios/Note8Remote.xcodeproj -scheme Note8Remote -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/device CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" build > build-device.log 2>&1 || { tail -100 build-device.log; exit 1; }

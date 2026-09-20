@@ -10,11 +10,12 @@ import UIKit
     @Published var audioEnabled = UserDefaults.standard.object(forKey: "liveAudio") as? Bool ?? true
     @Published var audioMessage = ""
     private var audioSupported = false
+    private var aacSupported = false
     private let liveAudio = LiveAudio()
     func updateAudio() {
         UserDefaults.standard.set(audioEnabled, forKey: "liveAudio")
-        liveAudio.report = { [weak self] message in self?.audioMessage = message }
-        if connected && viewingScreen && audioEnabled && audioSupported { liveAudio.start(host: host, token: token) }
+        liveAudio.setReporter { [weak self] message in Task { @MainActor in self?.audioMessage = message } }
+        if connected && viewingScreen && audioEnabled && audioSupported { liveAudio.start(host: (try? Self.normalizedHost(host)) ?? host, token: token, aac: aacSupported) }
         else { liveAudio.stop() }
     }
     @Published var image: UIImage?
@@ -94,6 +95,7 @@ import UIKit
     func post(_ path: String, _ object: [String: Any]) async throws -> [String: Any] { try await request(path, method: "POST", data: JSONSerialization.data(withJSONObject: object)) }
     func applyStatus(_ value: [String: Any]) {
         audioSupported = value["systemAudio"] as? Bool ?? false
+        aacSupported = value["aacAudio"] as? Bool ?? false
         updateAudio()
         if let media = value["media"] as? [String: Any] { mediaKind = media["kind"] as? String ?? ""; durationMs = (media["durationMs"] as? NSNumber)?.int64Value ?? 0 }
         if let isRecording = value["recording"] as? Bool { recording = isRecording }

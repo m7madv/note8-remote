@@ -42,7 +42,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         String auth=s.getHeaders().get("authorization");
         if(auth==null||!MessageDigest.isEqual(("Bearer "+token).getBytes(StandardCharsets.UTF_8),auth.getBytes(StandardCharsets.UTF_8)))return fail(Response.Status.UNAUTHORIZED,"رمز الاقتران غير صحيح.");
         if(s.getHeaders().containsKey("origin"))return fail(Response.Status.FORBIDDEN,"استخدم تطبيق التحكم.");
-        if(isWebsocketRequested(s)&&!s.getUri().equals("/stream")&&!s.getUri().equals("/audio"))return fail(Response.Status.NOT_FOUND,"مسار غير موجود.");
+        if(isWebsocketRequested(s)&&!s.getUri().equals("/stream")&&!s.getUri().equals("/audio")&&!s.getUri().equals("/audio-aac"))return fail(Response.Status.NOT_FOUND,"مسار غير موجود.");
         return super.serve(s);
     }
     static long length(IHTTPSession s,int max)throws Exception{
@@ -57,7 +57,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         if(!image&&source.isFile()){
             MediaMetadataRetriever m=new MediaMetadataRetriever();try{m.setDataSource(source.getPath());media.put("durationMs",videoDuration(source)).put("width",Integer.parseInt(m.extractMetadata(18))).put("height",Integer.parseInt(m.extractMetadata(19)));}catch(Exception ignored){}finally{m.release();}
         }
-        return new JSONObject().put("version","0.2").put("systemAudio",true).put("ready",root.ready).put("media",media).put("recording",recording).put("record",recordState).put("uploading",uploadBusy).put("screenAgeMs",frameAt==0?-1:SystemClock.elapsedRealtime()-frameAt);
+        return new JSONObject().put("version","0.3").put("systemAudio",true).put("aacAudio",true).put("ready",root.ready).put("media",media).put("recording",recording).put("record",recordState).put("uploading",uploadBusy).put("screenAgeMs",frameAt==0?-1:SystemClock.elapsedRealtime()-frameAt);
     }
     static long videoDuration(File source)throws Exception{
         MediaExtractor extractor=new MediaExtractor();try{extractor.setDataSource(source.getPath());for(int i=0;i<extractor.getTrackCount();i++){MediaFormat f=extractor.getTrackFormat(i);if(f.getString(MediaFormat.KEY_MIME).startsWith("video/")&&f.containsKey(MediaFormat.KEY_DURATION))return f.getLong(MediaFormat.KEY_DURATION)/1000;}throw new IOException("مدة مسار الفيديو غير معروفة.");}finally{extractor.release();}
@@ -146,14 +146,15 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
     @Override public void event(JSONObject e){String type=e.optString("type");if(type.equals("record")){recordState=e;recording=!e.optString("state").equals("finished");}else if(type.equals("error")){recording=false;recordState=e;}
         Client c=client;if(c!=null&&c.isOpen())sender.execute(()->{try{c.send(e.toString());}catch(Exception ignored){}});
     }
-    void setAudio(){try{root.send(object("type","audio").put("enabled",client!=null&&viewing&&audioClient!=null));}catch(Exception ignored){}}
-    @Override public void audio(byte[] pcm){
-        AudioClient c=audioClient;if(c==null||!viewing||client==null)return;
+    void setAudio(){try{root.send(object("type","audio").put("enabled",client!=null&&viewing&&audioClient!=null).put("aac",audioClient!=null&&audioClient.aac));}catch(Exception ignored){}}
+    @Override public void audio(byte[] pcm,boolean aac){
+        AudioClient c=audioClient;if(c==null||!viewing||client==null||c.aac!=aac)return;
         audioSender.execute(()->{if(c!=audioClient||!viewing)return;try{c.send(pcm);}catch(Exception e){c.disconnect();}});
     }
-    @Override protected WebSocket openWebSocket(IHTTPSession s){return s.getUri().equals("/audio")?new AudioClient(s):new Client(s);}
+    @Override protected WebSocket openWebSocket(IHTTPSession s){return s.getUri().equals("/stream")?new Client(s):new AudioClient(s);}
     final class AudioClient extends WebSocket {
-        AudioClient(IHTTPSession s){super(s);}
+        final boolean aac;
+        AudioClient(IHTTPSession s){super(s);aac=s.getUri().equals("/audio-aac");}
         @Override protected void onOpen(){AudioClient old=audioClient;audioClient=this;if(old!=null)old.disconnect();setAudio();}
         void disconnect(){try{close(WebSocketFrame.CloseCode.NormalClosure,"Disconnected",false);}catch(Exception ignored){}closed();}
         void closed(){if(audioClient==this){audioClient=null;audioSender.getQueue().clear();setAudio();}}
