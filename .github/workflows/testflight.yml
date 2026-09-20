@@ -24,6 +24,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Generate project
         run: python3 ios/generate_project.py
+      - name: Verify AAC decoding before upload
+        run: |
+          xcrun swiftc ios/Note8Remote/AACDecoder.swift ios/tests/main.swift -o /tmp/note8-audio-test
+          /tmp/note8-audio-test ios/tests/tone.aac
       - name: Archive, sign and upload to Apple
         env:
           CERTIFICATE_BASE64: ${{ secrets.APPLE_P12_BASE64 }}
