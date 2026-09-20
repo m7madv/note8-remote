@@ -15,6 +15,8 @@ final class LiveAudio: @unchecked Sendable {
     private var generation = UUID()
     private var playbackGeneration = UUID()
     private var pending = 0
+    private var prerollPackets = 2
+    private var lastMessage: String?
     private var clockOffset: Double?
     private var latePackets = 0
     private var report: (@Sendable (String) -> Void)?
@@ -23,7 +25,7 @@ final class LiveAudio: @unchecked Sendable {
     func start(host: String, token: String, aac: Bool) {
         queue.async {
             guard !self.requested else { return }
-            self.requested = true; self.generation = UUID()
+            self.requested = true; self.generation = UUID(); self.prerollPackets = 2
             self.connect(host: host, token: token, aac: aac, id: self.generation)
         }
     }
@@ -50,7 +52,7 @@ final class LiveAudio: @unchecked Sendable {
                 guard self.requested, self.generation == id, self.socket === socket else { return }
                 do {
                     let message = try result.get()
-                    if case .data(let data) = message { try self.play(data, id: id); self.report?("") }
+                    if case .data(let data) = message { try self.play(data, id: id); self.reportStatus("") }
                     self.receive(socket, host: host, token: token, aac: aac, id: id)
                 } catch { self.reconnect(host: host, token: token, aac: aac, id: id) }
             }
@@ -58,8 +60,12 @@ final class LiveAudio: @unchecked Sendable {
     }
     private func reconnect(host: String, token: String, aac: Bool, id: UUID) {
         closePlayback()
-        report?("تعذّر استقبال صوت النوت. جارٍ إعادة الاتصال بالصوت.")
+        reportStatus("تعذّر استقبال صوت النوت. جارٍ إعادة الاتصال بالصوت.")
         queue.asyncAfter(deadline: .now() + 1) { self.connect(host: host, token: token, aac: aac, id: id) }
+    }
+    private func reportStatus(_ message: String) {
+        guard lastMessage != message else { return }
+        lastMessage = message; report?(message)
     }
     private func preparePlayback() throws {
         let audio = AVAudioSession.sharedInstance()
@@ -96,11 +102,14 @@ final class LiveAudio: @unchecked Sendable {
             self.queue.async {
                 guard self.generation == id, self.playbackGeneration == playbackID else { return }
                 self.pending = max(0, self.pending - 1)
-                if self.pending == 0 { self.resetQueue() }
+                if self.pending == 0 {
+                    self.prerollPackets = min(4, self.prerollPackets + 1)
+                    self.resetQueue()
+                }
             }
         }
-        // Two packets absorb small network variations without a long startup delay.
-        if pending >= 2 && !player.isPlaying { player.play() }
+        // Start at 43 ms; rebuffer up to 85 ms after underruns on variable networks.
+        if pending >= prerollPackets && !player.isPlaying { player.play() }
     }
     private func pcm(_ data: Data) -> AVAudioPCMBuffer? {
         guard (data.count - 8) % 4 == 0 else { return nil }
