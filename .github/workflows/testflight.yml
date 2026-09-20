@@ -1,0 +1,36 @@
+name: Upload to TestFlight
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_id:
+        description: App Store Connect bundle identifier
+        required: true
+        default: com.mohammad.note8remote
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: testflight-upload
+  cancel-in-progress: false
+jobs:
+  upload:
+    if: github.event.repository.private == false
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      BUNDLE_ID: ${{ inputs.bundle_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate project
+        run: python3 ios/generate_project.py
+      - name: Archive, sign and upload to Apple
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.APPLE_P12_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.APPLE_P12_PASSWORD }}
+          PROFILE_BASE64: ${{ secrets.APPLE_PROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+        run: python3 ios/testflight.py
+      # Signed archives, profiles, private keys and upload logs are never public artifacts.

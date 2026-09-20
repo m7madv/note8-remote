@@ -26,6 +26,7 @@ jobs:
     timeout-minutes: 18
     env:
       BUNDLE_ID: ${{ inputs.bundle_id }}
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - name: Generate and validate project
