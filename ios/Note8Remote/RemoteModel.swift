@@ -7,6 +7,16 @@ import UIKit
     @Published var host = UserDefaults.standard.string(forKey: "host") ?? ""
     @Published var token = PairingStore.load()
     @Published var connected = false
+    @Published var audioEnabled = UserDefaults.standard.object(forKey: "liveAudio") as? Bool ?? true
+    @Published var audioMessage = ""
+    private var audioSupported = false
+    private let liveAudio = LiveAudio()
+    func updateAudio() {
+        UserDefaults.standard.set(audioEnabled, forKey: "liveAudio")
+        liveAudio.report = { [weak self] message in self?.audioMessage = message }
+        if connected && viewingScreen && audioEnabled && audioSupported { liveAudio.start(host: host, token: token) }
+        else { liveAudio.stop() }
+    }
     @Published var image: UIImage?
     @Published var error = ""
     @Published var mediaKind = ""
@@ -83,6 +93,8 @@ import UIKit
     }
     func post(_ path: String, _ object: [String: Any]) async throws -> [String: Any] { try await request(path, method: "POST", data: JSONSerialization.data(withJSONObject: object)) }
     func applyStatus(_ value: [String: Any]) {
+        audioSupported = value["systemAudio"] as? Bool ?? false
+        updateAudio()
         if let media = value["media"] as? [String: Any] { mediaKind = media["kind"] as? String ?? ""; durationMs = (media["durationMs"] as? NSNumber)?.int64Value ?? 0 }
         if let isRecording = value["recording"] as? Bool { recording = isRecording }
         if let state = value["record"] as? [String: Any] { applyEvent(state) }
@@ -129,7 +141,7 @@ import UIKit
                 return
             } catch {
                 guard id == generation, wantsConnection, !Task.isCancelled else { return }
-                connected = false; image = nil; self.error = "انقطع الاتصال. جارٍ إعادة المحاولة… " + error.localizedDescription
+                liveAudio.stop(); connected = false; image = nil; self.error = "انقطع الاتصال. جارٍ إعادة المحاولة… " + error.localizedDescription
                 task?.cancel(with: .goingAway, reason: nil); heartbeat?.cancel()
                 try? await Task.sleep(nanoseconds: UInt64(retry) * 1_000_000_000)
                 retry = min(15, retry * 2)
@@ -137,16 +149,18 @@ import UIKit
         }
     }
     func disconnect() {
+        liveAudio.stop()
         wantsConnection = false; generation = UUID(); connectTask?.cancel(); receiveTask?.cancel(); heartbeat?.cancel()
         task?.cancel(with: .goingAway, reason: nil); task = nil; connected = false; image = nil; outgoing.removeAll()
     }
     func background() { uploadTask?.cancel(); disconnect() }
     func resumeSavedConnection() { if !host.isEmpty && host == UserDefaults.standard.string(forKey: "host") && token == PairingStore.load() && !connected { connect() } }
-    func setViewingScreen(_ enabled: Bool) { viewingScreen = enabled; if connected { enqueue(["type": "view", "enabled": enabled]) } }
+    func setViewingScreen(_ enabled: Bool) { viewingScreen = enabled; if connected { enqueue(["type": "view", "enabled": enabled]) }; updateAudio() }
     func applyEvent(_ event: [String: Any]) {
         switch event["type"] as? String {
         case "status": applyStatus(event)
         case "error": error = event["message"] as? String ?? "تعذّر إكمال العملية."; recording = false
+        case "audioStatus": audioMessage = event["available"] as? Bool == true ? "" : (event["message"] as? String ?? "تعذّر بث صوت النظام.")
         case "record":
             let state = (event["state"] as? String) ?? ""
             recording = state != "finished"

@@ -17,6 +17,8 @@ import java.util.concurrent.*;
 final class RemoteServer extends NanoWSD implements RootClient.Listener {
     static final int PORT=8765,CHUNK=512*1024;
     final Context context;final String token;final RootClient root;
+    volatile AudioClient audioClient;
+    final ThreadPoolExecutor audioSender=new ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(4),new ThreadPoolExecutor.DiscardOldestPolicy());
     volatile Client client;volatile byte[] frame;volatile long frameAt;volatile JSONObject recordState=new JSONObject();
     final ExecutorService sender=Executors.newSingleThreadExecutor();
     final java.util.concurrent.atomic.AtomicBoolean sending=new java.util.concurrent.atomic.AtomicBoolean();
@@ -40,7 +42,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         String auth=s.getHeaders().get("authorization");
         if(auth==null||!MessageDigest.isEqual(("Bearer "+token).getBytes(StandardCharsets.UTF_8),auth.getBytes(StandardCharsets.UTF_8)))return fail(Response.Status.UNAUTHORIZED,"رمز الاقتران غير صحيح.");
         if(s.getHeaders().containsKey("origin"))return fail(Response.Status.FORBIDDEN,"استخدم تطبيق التحكم.");
-        if(isWebsocketRequested(s)&&!s.getUri().equals("/stream"))return fail(Response.Status.NOT_FOUND,"مسار غير موجود.");
+        if(isWebsocketRequested(s)&&!s.getUri().equals("/stream")&&!s.getUri().equals("/audio"))return fail(Response.Status.NOT_FOUND,"مسار غير موجود.");
         return super.serve(s);
     }
     static long length(IHTTPSession s,int max)throws Exception{
@@ -55,7 +57,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         if(!image&&source.isFile()){
             MediaMetadataRetriever m=new MediaMetadataRetriever();try{m.setDataSource(source.getPath());media.put("durationMs",videoDuration(source)).put("width",Integer.parseInt(m.extractMetadata(18))).put("height",Integer.parseInt(m.extractMetadata(19)));}catch(Exception ignored){}finally{m.release();}
         }
-        return new JSONObject().put("version","0.1").put("ready",root.ready).put("media",media).put("recording",recording).put("record",recordState).put("uploading",uploadBusy).put("screenAgeMs",frameAt==0?-1:SystemClock.elapsedRealtime()-frameAt);
+        return new JSONObject().put("version","0.2").put("systemAudio",true).put("ready",root.ready).put("media",media).put("recording",recording).put("record",recordState).put("uploading",uploadBusy).put("screenAgeMs",frameAt==0?-1:SystemClock.elapsedRealtime()-frameAt);
     }
     static long videoDuration(File source)throws Exception{
         MediaExtractor extractor=new MediaExtractor();try{extractor.setDataSource(source.getPath());for(int i=0;i<extractor.getTrackCount();i++){MediaFormat f=extractor.getTrackFormat(i);if(f.getString(MediaFormat.KEY_MIME).startsWith("video/")&&f.containsKey(MediaFormat.KEY_DURATION))return f.getLong(MediaFormat.KEY_DURATION)/1000;}throw new IOException("مدة مسار الفيديو غير معروفة.");}finally{extractor.release();}
@@ -137,23 +139,38 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         else throw new IOException("أمر غير مدعوم.");
     }
     static void validatePoint(JSONObject c)throws Exception{double x=c.getDouble("x"),y=c.getDouble("y");if(!Double.isFinite(x)||!Double.isFinite(y)||x<0||x>1||y<0||y>1)throw new IOException("موضع اللمس غير صالح.");}
-    void setStream(boolean enabled){try{root.send(object("type","stream").put("enabled",enabled&&viewing).put("width",480).put("fps",uploadBusy?1:8));}catch(Exception ignored){}}
+    void setStream(boolean enabled){setAudio();try{root.send(object("type","stream").put("enabled",enabled&&viewing).put("width",480).put("fps",uploadBusy?1:8));}catch(Exception ignored){}}
     @Override public void frame(byte[] jpeg){frame=jpeg;frameAt=SystemClock.elapsedRealtime();Client c=client;if(c==null||!c.isOpen()||!sending.compareAndSet(false,true))return;
         sender.execute(()->{try{c.send(jpeg);}catch(Exception e){c.disconnect();}finally{sending.set(false);}});
     }
     @Override public void event(JSONObject e){String type=e.optString("type");if(type.equals("record")){recordState=e;recording=!e.optString("state").equals("finished");}else if(type.equals("error")){recording=false;recordState=e;}
         Client c=client;if(c!=null&&c.isOpen())sender.execute(()->{try{c.send(e.toString());}catch(Exception ignored){}});
     }
-    @Override protected WebSocket openWebSocket(IHTTPSession s){return new Client(s);}
+    void setAudio(){try{root.send(object("type","audio").put("enabled",client!=null&&viewing&&audioClient!=null));}catch(Exception ignored){}}
+    @Override public void audio(byte[] pcm){
+        AudioClient c=audioClient;if(c==null||!viewing||client==null)return;
+        audioSender.execute(()->{if(c!=audioClient||!viewing)return;try{c.send(pcm);}catch(Exception e){c.disconnect();}});
+    }
+    @Override protected WebSocket openWebSocket(IHTTPSession s){return s.getUri().equals("/audio")?new AudioClient(s):new Client(s);}
+    final class AudioClient extends WebSocket {
+        AudioClient(IHTTPSession s){super(s);}
+        @Override protected void onOpen(){AudioClient old=audioClient;audioClient=this;if(old!=null)old.disconnect();setAudio();}
+        void disconnect(){try{close(WebSocketFrame.CloseCode.NormalClosure,"Disconnected",false);}catch(Exception ignored){}closed();}
+        void closed(){if(audioClient==this){audioClient=null;audioSender.getQueue().clear();setAudio();}}
+        @Override protected void onClose(WebSocketFrame.CloseCode code,String reason,boolean remote){closed();}
+        @Override protected void onMessage(WebSocketFrame f){disconnect();}
+        @Override protected void onPong(WebSocketFrame p){}
+        @Override protected void onException(IOException e){closed();}
+    }
     final class Client extends WebSocket{
         Client(IHTTPSession s){super(s);}
         @Override protected void onOpen(){Client old=client;client=this;if(old!=null)old.disconnect();viewing=true;setStream(true);try{send(status().put("type","status").toString());}catch(Exception ignored){}}
         void disconnect(){try{close(WebSocketFrame.CloseCode.NormalClosure,"Disconnected",false);}catch(Exception ignored){}closed();}
-        void closed(){if(client==this){client=null;setStream(false);try{root.send(object("type","cancelTouch"));}catch(Exception ignored){}}}
+        void closed(){if(client==this){client=null;AudioClient a=audioClient;if(a!=null)a.disconnect();setStream(false);try{root.send(object("type","cancelTouch"));}catch(Exception ignored){}}}
         @Override protected void onClose(WebSocketFrame.CloseCode c,String reason,boolean remote){closed();}
         @Override protected void onMessage(WebSocketFrame f){try{if(f.getTextPayload().length()>8192)throw new IOException("Request too large");JSONObject c=new JSONObject(f.getTextPayload());if(c.optString("type").equals("ping")){send(object("type","pong").toString());return;}command(c);}catch(Exception e){try{send(object("type","error").put("message",e.getMessage()).toString());}catch(Exception ignored){}}}
         @Override protected void onPong(WebSocketFrame p){}
         @Override protected void onException(IOException e){closed();}
     }
-    @Override public void stop(){Client c=client;if(c!=null)c.disconnect();super.stop();root.close();sender.shutdownNow();}
+    @Override public void stop(){Client c=client;if(c!=null)c.disconnect();AudioClient a=audioClient;if(a!=null)a.disconnect();super.stop();root.close();sender.shutdownNow();audioSender.shutdownNow();}
 }

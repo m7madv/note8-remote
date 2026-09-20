@@ -181,6 +181,13 @@ struct ContentView: View {
                 Button("لصق رابط الربط") { if let text = UIPasteboard.general.string, let url = URL(string: text) { model.importPairing(url) } }
                 Button(model.connected ? "إعادة الاتصال" : "حفظ واتصال") { model.connect(); tab = 0 }.frame(minHeight: 44)
             } header: { Text("ربط الهاتفين") } footer: { Text("ثبّت Tailscale وسجّل الدخول إلى الحساب نفسه على الهاتفين. انسخ العنوان والرمز من تطبيق «التحكم بالنوت». لا يحتاج التشغيل اليومي إلى كمبيوتر.") }
+            Section("صوت الهاتف") {
+                Toggle("سماع صوت النوت مباشرة", isOn: $model.audioEnabled)
+                    .onChange(of: model.audioEnabled) { _ in model.updateAudio() }
+                Text("يعمل أثناء فتح التحكم، ويتوقف عند مغادرته. استخدم أزرار صوت الآيفون لضبط المستوى. قد ينتقل صوت النوت إلى الآيفون فقط.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                if !model.audioMessage.isEmpty { Text(model.audioMessage).font(.footnote).foregroundStyle(.red) }
+            }
             Section("استهلاك الاتصال") {
                 Picker("سرعة الرفع القصوى", selection: $model.speed) { Text("هادئ · 0.25 ميغابايت/ث").tag(262_144); Text("متوازن · 1 ميغابايت/ث").tag(1_048_576); Text("سريع · 3 ميغابايت/ث").tag(3_145_728) }
                     .onChange(of: model.speed) { UserDefaults.standard.set($0, forKey: "uploadRate") }
@@ -188,7 +195,7 @@ struct ContentView: View {
             }
             Section("التسجيل") {
                 Button("إعادة تحديد موضع زر تسجيل سناب") { calibrated = false; calibrating = true; fullScreen = true; tab = 0 }
-                Text("التوقف يُنفّذ على النوت بحسب مدة الملف وبداية التسجيل الفعلية. تغيّر شكل واجهة سناب يستلزم تحديد الزر مجدداً. صوت شاشة النوت لا يُبث مباشرة في هذه النسخة.").font(.footnote).foregroundStyle(.secondary)
+                Text("التوقف يُنفّذ على النوت بحسب مدة الملف وبداية التسجيل الفعلية. تغيّر شكل واجهة سناب يستلزم تحديد الزر مجدداً. يمكن تشغيل صوت النوت من قسم صوت الهاتف.").font(.footnote).foregroundStyle(.secondary)
             }
             Section { Button("قطع الاتصال", role: .destructive) { model.disconnect() } }
         }.disabled(model.uploading)

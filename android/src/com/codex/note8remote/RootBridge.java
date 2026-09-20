@@ -21,6 +21,7 @@ public final class RootBridge {
     static long touchStart=0; static float lastX,lastY;
     static Object inputManager,displayManager;
     static Method inject,displayInfo,screenshot;
+    static final RootAudio audio=new RootAudio();
     static synchronized void packet(int type,byte[] data) throws IOException {
         OUT.writeByte(type);OUT.writeInt(data.length);OUT.write(data);OUT.flush();
     }
@@ -107,6 +108,7 @@ public final class RootBridge {
                 try{
                     JSONObject c=new JSONObject(line);String type=c.getString("type");
                     if(type.equals("stream")){streaming=c.optBoolean("enabled");previewWidth=Math.max(320,Math.min(720,c.optInt("width",480)));fps=Math.max(1,Math.min(12,c.optInt("fps",8)));}
+                    else if(type.equals("audio")){try{audio.enable(c.optBoolean("enabled"));}catch(Exception e){event(json("audioStatus").put("available",false).put("message","تعذّر بدء صوت النظام."));}}
                     else if(type.equals("touch")&&!autoRecording)touch(c.getInt("action"),(float)c.getDouble("x")*width,(float)c.getDouble("y")*height);
                     else if(type.equals("cancelTouch")&&!autoRecording)touch(1,lastX,lastY);
                     else if(type.equals("stopRecord")){autoRecording=false;touch(1,lastX,lastY);}
