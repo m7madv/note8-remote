@@ -12,16 +12,40 @@ import UIKit
     private var audioSupported = false
     private var aacSupported = false
     private var videoSupported = false, videoFailed = false
+    private var videoRetryTask: Task<Void, Never>?
+    private var videoRetryDelay: UInt64 = 2
+    private var videoAttempt = UUID()
     let videoPlayer = ScreenVideoPlayer()
     @Published var videoSize: CGSize?
     @Published var videoFPS: Double = 0
     func updateVideo() {
         if connected && viewingScreen && videoSupported && !videoFailed {
+            let attempt = videoAttempt
             videoPlayer.start(host: host, token: token, update: { [weak self] size, fps in
-                Task { @MainActor in guard let self = self, self.connected, self.viewingScreen, !self.videoFailed else { return }; self.videoSize = size; self.videoFPS = fps; self.lastFrame = Date() }
-            }, error: { [weak self] in Task { @MainActor in self?.videoFailed = true; self?.videoSize = nil; self?.error = "تعذّر بث الفيديو السريع؛ يعمل بث الصور مؤقتًا. أعد الاتصال للمحاولة مجددًا." } })
+                Task { @MainActor in guard let self = self, self.connected, self.viewingScreen, !self.videoFailed, self.videoAttempt == attempt else { return }; self.videoRetryDelay = 2; self.videoSize = size; self.videoFPS = fps; self.lastFrame = Date() }
+            }, error: { [weak self] in Task { @MainActor in
+                guard let self = self, self.videoAttempt == attempt else { return }
+                self.retryVideo()
+            } })
         } else { videoPlayer.stop(); videoSize = nil; videoFPS = 0 }
     }
+    private func retryVideo() {
+        guard connected, viewingScreen, videoSupported, videoRetryTask == nil else { return }
+        videoFailed = true; videoPlayer.stop(); videoSize = nil; videoFPS = 0
+        error = "تعثّر بث الفيديو. جارٍ استعادته تلقائيًا…"
+        let id = generation, attempt = UUID(); videoAttempt = attempt
+        let delay = videoRetryDelay; videoRetryDelay = min(15, delay * 2)
+        videoRetryTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: delay * 1_000_000_000) } catch { return }
+            guard let self = self, self.generation == id, self.videoAttempt == attempt,
+                  self.connected, self.viewingScreen, !Task.isCancelled else { return }
+            self.videoRetryTask = nil; self.videoFailed = false; self.error = ""; self.updateVideo()
+        }
+    }
+    private func cancelVideoRetry() {
+        videoRetryTask?.cancel(); videoRetryTask = nil; videoAttempt = UUID(); videoRetryDelay = 2
+    }
+
     private let liveAudio = LiveAudio()
     func updateAudio() {
         UserDefaults.standard.set(audioEnabled, forKey: "liveAudio")
@@ -165,7 +189,7 @@ import UIKit
                 return
             } catch {
                 guard id == generation, wantsConnection, !Task.isCancelled else { return }
-                liveAudio.stop(); videoPlayer.stop(); videoSize = nil; connected = false; self.error = "انقطع الاتصال. جارٍ إعادة المحاولة… " + error.localizedDescription
+                cancelVideoRetry(); liveAudio.stop(); videoPlayer.stop(); videoSize = nil; connected = false; self.error = "انقطع الاتصال. جارٍ إعادة المحاولة… " + error.localizedDescription
                 task?.cancel(with: .goingAway, reason: nil); heartbeat?.cancel()
                 try? await Task.sleep(nanoseconds: UInt64(retry) * 1_000_000_000)
                 retry = min(15, retry * 2)
@@ -173,19 +197,19 @@ import UIKit
         }
     }
     func disconnect() {
-        liveAudio.stop(); videoPlayer.stop(); videoSize = nil
+        cancelVideoRetry(); liveAudio.stop(); videoPlayer.stop(); videoSize = nil
         wantsConnection = false; generation = UUID(); connectTask?.cancel(); receiveTask?.cancel(); heartbeat?.cancel()
         task?.cancel(with: .goingAway, reason: nil); task = nil; connected = false; image = nil; outgoing.removeAll(); draining = false; drainGeneration = UUID()
     }
     func background() { uploadTask?.cancel(); disconnect() }
     func resumeSavedConnection() { if !host.isEmpty && host == UserDefaults.standard.string(forKey: "host") && token == PairingStore.load() && !connected { connect() } }
-    func setViewingScreen(_ enabled: Bool) { viewingScreen = enabled; if connected { enqueue(["type": "view", "enabled": enabled, "frameAck": true, "fps": 8]) }; updateAudio(); updateVideo() }
+    func setViewingScreen(_ enabled: Bool) { if !enabled { cancelVideoRetry() }; if enabled && !viewingScreen { videoFailed = false }; viewingScreen = enabled; if connected { enqueue(["type": "view", "enabled": enabled, "frameAck": true, "fps": 8]) }; updateAudio(); updateVideo() }
     func applyEvent(_ event: [String: Any]) {
         switch event["type"] as? String {
         case "status": applyStatus(event)
         case "error": error = event["message"] as? String ?? "تعذّر إكمال العملية."; recording = false
         case "videoStatus":
-            if event["available"] as? Bool == false { videoFailed = true; updateVideo(); error = event["message"] as? String ?? "تعذّر تشغيل بث الفيديو." }
+            if event["available"] as? Bool == false { retryVideo() }
         case "audioStatus": audioMessage = event["available"] as? Bool == true ? "" : (event["message"] as? String ?? "تعذّر بث صوت النظام.")
         case "record":
             let state = (event["state"] as? String) ?? ""

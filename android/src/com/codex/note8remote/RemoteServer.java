@@ -18,7 +18,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
     static final int PORT=8765,CHUNK=512*1024;
     final Context context;final String token;final RootClient root;
     volatile AudioClient audioClient;
-    volatile VideoClient videoClient;
+    volatile VideoClient videoClient,lastVideoClient;
     final java.util.concurrent.atomic.AtomicInteger videoPending=new java.util.concurrent.atomic.AtomicInteger();
     final ExecutorService videoSender=Executors.newSingleThreadExecutor();
     final ThreadPoolExecutor audioSender=new ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(4),new ThreadPoolExecutor.DiscardOldestPolicy());
@@ -61,10 +61,10 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
     static byte[] body(IHTTPSession s,int max)throws Exception{int n=(int)length(s,max);byte[] b=new byte[n];new DataInputStream(s.getInputStream()).readFully(b);return b;}
     static JSONObject bodyJSON(IHTTPSession s)throws Exception{return new JSONObject(new String(body(s,8192),StandardCharsets.UTF_8));}
     JSONObject diagnostics()throws Exception {
-        VideoClient v=videoClient;Client c=client;
-        JSONObject d=new JSONObject().put("control",c!=null).put("video",v!=null).put("audio",audioClient!=null).put("viewing",viewing).put("videoQueue",videoPending.get());
+        VideoClient activeVideo=videoClient;VideoClient v=activeVideo!=null?activeVideo:lastVideoClient;Client c=client;
+        JSONObject d=new JSONObject().put("control",c!=null).put("video",activeVideo!=null).put("audio",audioClient!=null).put("viewing",viewing).put("videoQueue",videoPending.get());
         if(c!=null)d.put("clientAgent",c.agent);
-        if(v!=null)d.put("ageMs",SystemClock.elapsedRealtime()-v.started).put("encoded",v.encoded.get()).put("sent",v.sent.get()).put("acks",v.acks.get()).put("windowDrops",v.windowDrops.get()).put("queueDrops",v.queueDrops.get()).put("keyWaitDrops",v.keyWaitDrops.get()).put("keyRequests",v.keyRequests.get()).put("waitingKey",v.needsKey).put("windowLimit",v.window.limit()).put("windowPending",v.window.pending()).put("ackRttMs",v.window.rttMs()).put("lastAckMs",v.lastAckMs).put("lastSendMs",v.lastSendMs).put("sendMaxMs",v.sendMaxMs);
+        if(v!=null)d.put("closeReason",v.closeReason).put("closedAtMs",v.closedAtMs).put("ageMs",SystemClock.elapsedRealtime()-v.started).put("encoded",v.encoded.get()).put("sent",v.sent.get()).put("acks",v.acks.get()).put("windowDrops",v.windowDrops.get()).put("queueDrops",v.queueDrops.get()).put("keyWaitDrops",v.keyWaitDrops.get()).put("keyRequests",v.keyRequests.get()).put("waitingKey",v.needsKey).put("windowLimit",v.window.limit()).put("windowPending",v.window.pending()).put("ackRttMs",v.window.rttMs()).put("lastAckMs",v.lastAckMs).put("lastSendMs",v.lastSendMs).put("sendMaxMs",v.sendMaxMs);
         return d;
     }
     JSONObject status()throws Exception{
@@ -73,7 +73,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         if(!image&&source.isFile()){
             MediaMetadataRetriever m=new MediaMetadataRetriever();try{m.setDataSource(source.getPath());media.put("durationMs",videoDuration(source)).put("width",Integer.parseInt(m.extractMetadata(18))).put("height",Integer.parseInt(m.extractMetadata(19)));}catch(Exception ignored){}finally{m.release();}
         }
-        return new JSONObject().put("version","0.5").put("stream",diagnostics()).put("h264Screen",true).put("systemAudio",true).put("aacAudio",true).put("ready",root.ready).put("media",media).put("recording",recording).put("record",recordState).put("uploading",uploadBusy).put("screenAgeMs",frameAt==0?-1:SystemClock.elapsedRealtime()-frameAt);
+        return new JSONObject().put("version","0.6").put("stream",diagnostics()).put("h264Screen",true).put("systemAudio",true).put("aacAudio",true).put("ready",root.ready).put("media",media).put("recording",recording).put("record",recordState).put("uploading",uploadBusy).put("screenAgeMs",frameAt==0?-1:SystemClock.elapsedRealtime()-frameAt);
     }
     static long videoDuration(File source)throws Exception{
         MediaExtractor extractor=new MediaExtractor();try{extractor.setDataSource(source.getPath());for(int i=0;i<extractor.getTrackCount();i++){MediaFormat f=extractor.getTrackFormat(i);if(f.getString(MediaFormat.KEY_MIME).startsWith("video/")&&f.containsKey(MediaFormat.KEY_DURATION))return f.getLong(MediaFormat.KEY_DURATION)/1000;}throw new IOException("مدة مسار الفيديو غير معروفة.");}finally{extractor.release();}
@@ -192,13 +192,13 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
     final class VideoClient extends WebSocket {
         final long started=SystemClock.elapsedRealtime();
         final java.util.concurrent.atomic.AtomicLong encoded=new java.util.concurrent.atomic.AtomicLong(),sent=new java.util.concurrent.atomic.AtomicLong(),acks=new java.util.concurrent.atomic.AtomicLong(),windowDrops=new java.util.concurrent.atomic.AtomicLong(),queueDrops=new java.util.concurrent.atomic.AtomicLong(),keyWaitDrops=new java.util.concurrent.atomic.AtomicLong(),keyRequests=new java.util.concurrent.atomic.AtomicLong();
-        volatile long lastAckMs,lastSendMs,sendMaxMs;
+        volatile long lastAckMs,lastSendMs,sendMaxMs,closedAtMs;volatile String closeReason="";
         volatile boolean needsKey=true;final boolean ackRequired;final VideoWindow window=new VideoWindow();
         VideoClient(IHTTPSession s){super(s);ackRequired="1".equals(s.getHeaders().get("x-note8-video-ack"));}
         @Override protected void onOpen(){VideoClient old=videoClient;videoClient=this;if(old!=null)old.disconnect();setStream(client!=null);try{root.send(object("type","videoKey"));}catch(Exception ignored){}}
         void disconnect(){try{close(WebSocketFrame.CloseCode.NormalClosure,"Disconnected",false);}catch(Exception ignored){}closed();}
-        void closed(){if(videoClient==this){videoClient=null;setStream(client!=null);}}
-        @Override protected void onClose(WebSocketFrame.CloseCode code,String reason,boolean remote){closed();}
+        void closed(){if(videoClient==this){closedAtMs=SystemClock.elapsedRealtime();lastVideoClient=this;videoClient=null;setStream(client!=null);}}
+        @Override protected void onClose(WebSocketFrame.CloseCode code,String reason,boolean remote){closeReason=code+":"+(reason==null?"":reason.substring(0,Math.min(reason.length(),120)));closed();}
         @Override protected void onMessage(WebSocketFrame f){String text=f.getTextPayload();if(text.startsWith("ack:")&&text.length()<32){try{window.acknowledge(Long.parseLong(text.substring(4)));acks.incrementAndGet();lastAckMs=SystemClock.elapsedRealtime();}catch(Exception e){disconnect();}}else if("key".equals(text)){keyRequests.incrementAndGet();try{root.send(object("type","videoKey"));}catch(Exception ignored){}}else disconnect();}
         @Override protected void onPong(WebSocketFrame p){}
         @Override protected void onException(IOException e){closed();}

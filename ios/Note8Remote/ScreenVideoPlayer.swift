@@ -10,7 +10,8 @@ final class ScreenVideoPlayer: @unchecked Sendable {
     private var samples = H264Samples()
     private var requested = false, waitingForKey = true
     private var lastPacket: TimeInterval = 0
-    private var lastPing: TimeInterval = 0
+    private var health = VideoHealth(now: 0)
+    private var currentSize: CGSize?
     private var count = 0
     private var reportTime: TimeInterval = 0
     private var update: (@Sendable (CGSize, Double) -> Void)?
@@ -24,14 +25,22 @@ final class ScreenVideoPlayer: @unchecked Sendable {
             let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 20
             let session = URLSession(configuration: config); self.session = session
             let socket = session.webSocketTask(with: request); socket.maximumMessageSize = 4 * 1024 * 1024; self.socket = socket; socket.resume()
-            self.lastPacket = ProcessInfo.processInfo.systemUptime; self.lastPing = self.lastPacket
+            self.lastPacket = ProcessInfo.processInfo.systemUptime; self.health = VideoHealth(now: self.lastPacket); self.currentSize = nil
             let timer = DispatchSource.makeTimerSource(queue: self.queue); timer.schedule(deadline: .now()+2,repeating: 2)
             timer.setEventHandler { [weak self, weak socket] in
                 guard let self = self, let socket = socket, self.socket === socket else { return }
                 let now = ProcessInfo.processInfo.systemUptime
-                if now-self.lastPacket > 5 { self.fail(); return }
-                guard now-self.lastPing >= 8 else { return }; self.lastPing = now
-                socket.sendPing { [weak self] e in if e != nil { self?.queue.async { if self?.socket === socket { self?.fail() } } } }
+                if let reason = self.health.failure(now: now) { self.fail(reason); return }
+                socket.sendPing { [weak self] e in
+                    self?.queue.async {
+                        guard let self = self, self.socket === socket else { return }
+                        if e != nil { self.fail("ping-error"); return }
+                        self.health.lastPong = ProcessInfo.processInfo.systemUptime
+                        if self.health.lastPong-self.lastPacket > 1, let size = self.currentSize {
+                            self.update?(size, 0)
+                        }
+                    }
+                }
             }
             self.timer = timer; timer.resume(); self.receive(socket)
         }
@@ -44,7 +53,7 @@ final class ScreenVideoPlayer: @unchecked Sendable {
                 do {
                     if case .data(let data) = try result.get() { self.display(data) }
                     self.receive(socket)
-                } catch { self.fail() }
+                } catch { self.fail("receive-error") }
             }
         }
     }
@@ -55,23 +64,24 @@ final class ScreenVideoPlayer: @unchecked Sendable {
         let key = (data[data.startIndex+7] & 1) != 0
         if waitingForKey && !key { return }
         if layer.status == .failed || !layer.isReadyForMoreMediaData {
-            layer.flush(); waitingForKey = true
+            layer.flush(); waitingForKey = true; health.waitForKey(now: ProcessInfo.processInfo.systemUptime)
             if !key { socket?.send(.string("key")) { _ in }; return }
         }
         guard let sample = samples.sample(data), let format = CMSampleBufferGetFormatDescription(sample) else { return }
-        waitingForKey = false; layer.enqueue(sample); count += 1; lastPacket = ProcessInfo.processInfo.systemUptime
+        waitingForKey = false; health.frame(); layer.enqueue(sample); count += 1; lastPacket = ProcessInfo.processInfo.systemUptime
         let now = ProcessInfo.processInfo.systemUptime
         if reportTime == 0 || now - reportTime >= 1 {
             let dimensions = CMVideoFormatDescriptionGetDimensions(format)
             let fps = reportTime == 0 ? 0 : Double(count)/(now-reportTime)
-            update?(CGSize(width: Int(dimensions.width),height: Int(dimensions.height)),fps)
+            let size = CGSize(width: Int(dimensions.width),height: Int(dimensions.height)); currentSize = size
+            update?(size,fps)
             count = 0; reportTime = now
         }
     }
-    private func fail() { let notify = error; close(); notify?() }
-    private func close() {
+    private func fail(_ reason: String) { let notify = error; close(reason); notify?() }
+    private func close(_ reason: String = "stopped") {
         requested = false; timer?.cancel(); timer = nil
-        socket?.cancel(with: .goingAway, reason: nil); socket = nil
+        socket?.cancel(with: .goingAway, reason: Data(reason.utf8)); socket = nil
         session?.invalidateAndCancel(); session = nil; layer.flushAndRemoveImage()
     }
     func stop() { queue.async { self.close() } }

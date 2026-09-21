@@ -116,3 +116,16 @@ VTDecompressionSessionInvalidate(videoSession!)
 precondition(decoded.frames == 60 && decoded.failures == 0)
 precondition(builder.sample(Data([0,1,2])) == nil)
 print("AVC integration passed: 60 decoded frames, 360x740, zero decode failures; target rate only, not device capture measurement")
+
+// Static scenes remain valid while the transport responds; missing startup/recovery does not.
+var health = VideoHealth(now: 0)
+precondition(health.failure(now: 7) == nil)
+precondition(health.failure(now: 9) == "first-frame-timeout")
+health.frame()
+for t in 1...120 { health.lastPong = Double(t); precondition(health.failure(now: Double(t)) == nil) }
+precondition(health.failure(now: 133) == "pong-timeout")
+health.lastPong = 140; health.waitForKey(now: 140)
+precondition(health.failure(now: 147) == nil)
+precondition(health.failure(now: 149) == "key-frame-timeout")
+health.frame(); precondition(health.failure(now: 149) == nil)
+print("Video health passed: idle scenes survive, startup/pong/key-frame timeouts detected")
