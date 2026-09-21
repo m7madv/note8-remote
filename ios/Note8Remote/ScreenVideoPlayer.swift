@@ -9,6 +9,8 @@ final class ScreenVideoPlayer: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var samples = H264Samples()
     private var requested = false, waitingForKey = true
+    private var lastPacket: TimeInterval = 0
+    private var lastPing: TimeInterval = 0
     private var count = 0
     private var reportTime: TimeInterval = 0
     private var update: (@Sendable (CGSize, Double) -> Void)?
@@ -18,13 +20,17 @@ final class ScreenVideoPlayer: @unchecked Sendable {
         queue.async {
             guard !self.requested, let url = URL(string: "ws://\(host):8765/video") else { return }
             self.requested = true; self.update = update; self.error = error; self.samples = H264Samples(); self.waitingForKey = true; self.count = 0; self.reportTime = 0
-            var request = URLRequest(url: url); request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            var request = URLRequest(url: url); request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization"); request.setValue("1", forHTTPHeaderField: "X-Note8-Video-Ack")
             let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 20
             let session = URLSession(configuration: config); self.session = session
             let socket = session.webSocketTask(with: request); socket.maximumMessageSize = 4 * 1024 * 1024; self.socket = socket; socket.resume()
-            let timer = DispatchSource.makeTimerSource(queue: self.queue); timer.schedule(deadline: .now()+8,repeating: 8)
+            self.lastPacket = ProcessInfo.processInfo.systemUptime; self.lastPing = self.lastPacket
+            let timer = DispatchSource.makeTimerSource(queue: self.queue); timer.schedule(deadline: .now()+2,repeating: 2)
             timer.setEventHandler { [weak self, weak socket] in
                 guard let self = self, let socket = socket, self.socket === socket else { return }
+                let now = ProcessInfo.processInfo.systemUptime
+                if now-self.lastPacket > 5 { self.fail(); return }
+                guard now-self.lastPing >= 8 else { return }; self.lastPing = now
                 socket.sendPing { [weak self] e in if e != nil { self?.queue.async { if self?.socket === socket { self?.fail() } } } }
             }
             self.timer = timer; timer.resume(); self.receive(socket)
@@ -43,7 +49,9 @@ final class ScreenVideoPlayer: @unchecked Sendable {
         }
     }
     private func display(_ data: Data) {
-        guard data.count > 16 else { return }
+        guard data.count > 16, data.prefix(4).elementsEqual([0x4e,0x38,0x56,0x31]) else { return }
+        let pts = data.dropFirst(8).prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
+        socket?.send(.string("ack:\(pts)")) { _ in }
         let key = (data[data.startIndex+7] & 1) != 0
         if waitingForKey && !key { return }
         if layer.status == .failed || !layer.isReadyForMoreMediaData {
@@ -51,7 +59,7 @@ final class ScreenVideoPlayer: @unchecked Sendable {
             if !key { socket?.send(.string("key")) { _ in }; return }
         }
         guard let sample = samples.sample(data), let format = CMSampleBufferGetFormatDescription(sample) else { return }
-        waitingForKey = false; layer.enqueue(sample); count += 1
+        waitingForKey = false; layer.enqueue(sample); count += 1; lastPacket = ProcessInfo.processInfo.systemUptime
         let now = ProcessInfo.processInfo.systemUptime
         if reportTime == 0 || now - reportTime >= 1 {
             let dimensions = CMVideoFormatDescriptionGetDimensions(format)

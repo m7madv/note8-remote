@@ -173,20 +173,22 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
     @Override public void video(byte[] packet){
         VideoClient c=videoClient;if(c==null||client==null||!viewing)return;
         boolean key=packet.length>16&&(packet[7]&1)!=0;
-        if(videoPending.get()>=6){c.needsKey=true;try{root.send(object("type","videoKey"));}catch(Exception ignored){}return;}
+        if(videoPending.get()>=6){if(!c.needsKey){c.needsKey=true;try{root.send(object("type","videoKey"));}catch(Exception ignored){}}return;}
         if(c.needsKey&&!key)return;
+        long pts=java.nio.ByteBuffer.wrap(packet,8,8).getLong();
+        if(c.ackRequired&&!c.window.reserve(pts)){if(!c.needsKey){c.needsKey=true;try{root.send(object("type","videoKey"));}catch(Exception ignored){}}return;}
         if(key)c.needsKey=false;
         videoPending.incrementAndGet();
         videoSender.execute(()->{try{if(c==videoClient&&viewing)c.send(packet);}catch(Exception e){c.disconnect();}finally{videoPending.decrementAndGet();}});
     }
     final class VideoClient extends WebSocket {
-        volatile boolean needsKey=true;
-        VideoClient(IHTTPSession s){super(s);}
+        volatile boolean needsKey=true;final boolean ackRequired;final VideoWindow window=new VideoWindow();
+        VideoClient(IHTTPSession s){super(s);ackRequired="1".equals(s.getHeaders().get("x-note8-video-ack"));}
         @Override protected void onOpen(){VideoClient old=videoClient;videoClient=this;if(old!=null)old.disconnect();setStream(client!=null);try{root.send(object("type","videoKey"));}catch(Exception ignored){}}
         void disconnect(){try{close(WebSocketFrame.CloseCode.NormalClosure,"Disconnected",false);}catch(Exception ignored){}closed();}
         void closed(){if(videoClient==this){videoClient=null;setStream(client!=null);}}
         @Override protected void onClose(WebSocketFrame.CloseCode code,String reason,boolean remote){closed();}
-        @Override protected void onMessage(WebSocketFrame f){if("key".equals(f.getTextPayload())){try{root.send(object("type","videoKey"));}catch(Exception ignored){}}else disconnect();}
+        @Override protected void onMessage(WebSocketFrame f){String text=f.getTextPayload();if(text.startsWith("ack:")&&text.length()<32){try{window.acknowledge(Long.parseLong(text.substring(4)));}catch(Exception e){disconnect();}}else if("key".equals(text)){try{root.send(object("type","videoKey"));}catch(Exception ignored){}}else disconnect();}
         @Override protected void onPong(WebSocketFrame p){}
         @Override protected void onException(IOException e){closed();}
     }
