@@ -69,8 +69,8 @@ struct ContentView: View {
     var remoteDisplay: some View {
             GeometryReader { proxy in
                 ZStack {
-                    TouchScreen(image: model.image, enabled: !model.stale && !model.recording, calibrating: calibrating, point: { p in shutterX = p.x; shutterY = p.y; calibrated = true; calibrating = false }, touch: { action, p in model.enqueue(["type": "touch", "action": action, "x": p.x, "y": p.y]) })
-                    if model.image == nil {
+                    TouchScreen(image: model.image, videoPlayer: model.videoPlayer, videoSize: model.videoSize, enabled: !model.stale && !model.recording, calibrating: calibrating, point: { p in shutterX = p.x; shutterY = p.y; calibrated = true; calibrating = false }, touch: { action, p in model.enqueue(["type": "touch", "action": action, "x": p.x, "y": p.y]) })
+                    if model.image == nil && model.videoSize == nil {
                         VStack(spacing: 16) {
                             Image(systemName: "iphone.gen1.radiowaves.left.and.right").font(.system(size: 42))
                             Text("ستظهر شاشة النوت هنا").font(.headline)
@@ -110,6 +110,7 @@ struct ContentView: View {
             Image(systemName: model.stale ? "wifi.exclamationmark" : "checkmark.circle.fill").foregroundStyle(model.stale ? Color.secondary : Color.accentColor)
             Text(model.stale ? "غير متصل بالشاشة" : "متصل بالنوت").font(.subheadline.weight(.medium))
             Spacer()
+            if model.videoSize != nil { Text("استقبال \(Int(model.videoFPS.rounded())) إطار/ث").font(.caption.monospacedDigit()) }
             if model.durationMs > 0 { Text(String(format: "%.2f ثانية", Double(model.durationMs) / 1000)).font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
         }.accessibilityElement(children: .combine)
     }

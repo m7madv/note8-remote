@@ -1,0 +1,70 @@
+import AVFoundation
+import Foundation
+
+final class ScreenVideoPlayer: @unchecked Sendable {
+    let layer = AVSampleBufferDisplayLayer()
+    private let queue = DispatchQueue(label: "Note8.HardwareVideo", qos: .userInteractive)
+    private var socket: URLSessionWebSocketTask?
+    private var session: URLSession?
+    private var timer: DispatchSourceTimer?
+    private var samples = H264Samples()
+    private var requested = false, waitingForKey = true
+    private var count = 0
+    private var reportTime: TimeInterval = 0
+    private var update: (@Sendable (CGSize, Double) -> Void)?
+    private var error: (@Sendable () -> Void)?
+    init() { layer.videoGravity = .resizeAspect }
+    func start(host: String, token: String, update: @escaping @Sendable (CGSize, Double) -> Void, error: @escaping @Sendable () -> Void) {
+        queue.async {
+            guard !self.requested, let url = URL(string: "ws://\(host):8765/video") else { return }
+            self.requested = true; self.update = update; self.error = error; self.samples = H264Samples(); self.waitingForKey = true; self.count = 0; self.reportTime = 0
+            var request = URLRequest(url: url); request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 20
+            let session = URLSession(configuration: config); self.session = session
+            let socket = session.webSocketTask(with: request); socket.maximumMessageSize = 4 * 1024 * 1024; self.socket = socket; socket.resume()
+            let timer = DispatchSource.makeTimerSource(queue: self.queue); timer.schedule(deadline: .now()+8,repeating: 8)
+            timer.setEventHandler { [weak self, weak socket] in
+                guard let self = self, let socket = socket, self.socket === socket else { return }
+                socket.sendPing { [weak self] e in if e != nil { self?.queue.async { if self?.socket === socket { self?.fail() } } } }
+            }
+            self.timer = timer; timer.resume(); self.receive(socket)
+        }
+    }
+    private func receive(_ socket: URLSessionWebSocketTask) {
+        socket.receive { [weak self] result in
+            guard let self = self else { return }
+            self.queue.async {
+                guard self.socket === socket, self.requested else { return }
+                do {
+                    if case .data(let data) = try result.get() { self.display(data) }
+                    self.receive(socket)
+                } catch { self.fail() }
+            }
+        }
+    }
+    private func display(_ data: Data) {
+        guard data.count > 16 else { return }
+        let key = (data[data.startIndex+7] & 1) != 0
+        if waitingForKey && !key { return }
+        if layer.status == .failed || !layer.isReadyForMoreMediaData {
+            layer.flush(); waitingForKey = true
+            if !key { socket?.send(.string("key")) { _ in }; return }
+        }
+        guard let sample = samples.sample(data), let format = CMSampleBufferGetFormatDescription(sample) else { return }
+        waitingForKey = false; layer.enqueue(sample); count += 1
+        let now = ProcessInfo.processInfo.systemUptime
+        if reportTime == 0 || now - reportTime >= 1 {
+            let dimensions = CMVideoFormatDescriptionGetDimensions(format)
+            let fps = reportTime == 0 ? 0 : Double(count)/(now-reportTime)
+            update?(CGSize(width: Int(dimensions.width),height: Int(dimensions.height)),fps)
+            count = 0; reportTime = now
+        }
+    }
+    private func fail() { let notify = error; close(); notify?() }
+    private func close() {
+        requested = false; timer?.cancel(); timer = nil
+        socket?.cancel(with: .goingAway, reason: nil); socket = nil
+        session?.invalidateAndCancel(); session = nil; layer.flushAndRemoveImage()
+    }
+    func stop() { queue.async { self.close() } }
+}

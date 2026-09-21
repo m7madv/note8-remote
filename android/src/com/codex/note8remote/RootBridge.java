@@ -22,8 +22,12 @@ public final class RootBridge {
     static Object inputManager,displayManager;
     static Method inject,displayInfo,screenshot;
     static final RootAudio audio=new RootAudio();
-    static synchronized void packet(int type,byte[] data) throws IOException {
+    static final RootVideo video=new RootVideo();
+    static final Object outputLock=new Object();
+    static void packet(int type,byte[] data) throws IOException {
+        synchronized(outputLock){
         OUT.writeByte(type);OUT.writeInt(data.length);OUT.write(data);OUT.flush();
+        }
     }
     static void event(JSONObject event) { try{packet(1,event.toString().getBytes(StandardCharsets.UTF_8));}catch(Exception e){alive=false;} }
     static JSONObject json(String type) {JSONObject o=new JSONObject();try{o.put("type",type);}catch(Exception ignored){}return o;}
@@ -107,7 +111,9 @@ public final class RootBridge {
                 if(line.length()>8192)continue;
                 try{
                     JSONObject c=new JSONObject(line);String type=c.getString("type");
-                    if(type.equals("stream")){streaming=c.optBoolean("enabled");previewWidth=Math.max(320,Math.min(720,c.optInt("width",480)));fps=Math.max(1,Math.min(12,c.optInt("fps",8)));}
+                    if(type.equals("stream")){streaming=c.optBoolean("enabled");previewWidth=Math.max(320,Math.min(720,c.optInt("width",480)));fps=Math.max(1,Math.min(24,c.optInt("fps",8)));}
+                    else if(type.equals("video")){video.enable(c.optBoolean("enabled"));}
+                    else if(type.equals("videoKey")){video.requestKey=true;}
                     else if(type.equals("audio")){try{audio.enable(c.optBoolean("enabled"),c.optBoolean("aac"));}catch(Exception e){event(json("audioStatus").put("available",false).put("message","تعذّر بدء صوت النظام."));}}
                     else if(type.equals("touch")&&!autoRecording)touch(c.getInt("action"),(float)c.getDouble("x")*width,(float)c.getDouble("y")*height);
                     else if(type.equals("cancelTouch")&&!autoRecording)touch(1,lastX,lastY);

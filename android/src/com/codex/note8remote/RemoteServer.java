@@ -18,6 +18,9 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
     static final int PORT=8765,CHUNK=512*1024;
     final Context context;final String token;final RootClient root;
     volatile AudioClient audioClient;
+    volatile VideoClient videoClient;
+    final java.util.concurrent.atomic.AtomicInteger videoPending=new java.util.concurrent.atomic.AtomicInteger();
+    final ExecutorService videoSender=Executors.newSingleThreadExecutor();
     final ThreadPoolExecutor audioSender=new ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(4),new ThreadPoolExecutor.DiscardOldestPolicy());
     volatile Client client;volatile byte[] frame;volatile long frameAt;volatile JSONObject recordState=new JSONObject();
     final ExecutorService sender=Executors.newSingleThreadExecutor();
@@ -26,7 +29,13 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
     volatile long lastRecordingWall=0;
     String uploadId;File upload;long expectedBytes;String expectedHash,kind;
     RemoteServer(Context context)throws Exception{
-        super(PORT);this.context=context;token=token(context);root=new RootClient(context,this);
+        super(PORT);
+        setServerSocketFactory(()->new java.net.ServerSocket(){
+            @Override public java.net.Socket accept() throws IOException {
+                java.net.Socket socket=super.accept();socket.setTcpNoDelay(true);return socket;
+            }
+        });
+        this.context=context;token=token(context);root=new RootClient(context,this);
     }
     static String token(Context context){SharedPreferences prefs=context.getSharedPreferences("remote",0);String value=prefs.getString("token",null);if(value==null){byte[] b=new byte[24];new SecureRandom().nextBytes(b);value=hex(b);prefs.edit().putString("token",value).commit();}return value;}
     static String hex(byte[] b){StringBuilder s=new StringBuilder();for(byte v:b)s.append(String.format(Locale.ROOT,"%02x",v&255));return s.toString();}
@@ -42,7 +51,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         String auth=s.getHeaders().get("authorization");
         if(auth==null||!MessageDigest.isEqual(("Bearer "+token).getBytes(StandardCharsets.UTF_8),auth.getBytes(StandardCharsets.UTF_8)))return fail(Response.Status.UNAUTHORIZED,"رمز الاقتران غير صحيح.");
         if(s.getHeaders().containsKey("origin"))return fail(Response.Status.FORBIDDEN,"استخدم تطبيق التحكم.");
-        if(isWebsocketRequested(s)&&!s.getUri().equals("/stream")&&!s.getUri().equals("/audio")&&!s.getUri().equals("/audio-aac"))return fail(Response.Status.NOT_FOUND,"مسار غير موجود.");
+        if(isWebsocketRequested(s)&&!s.getUri().equals("/stream")&&!s.getUri().equals("/audio")&&!s.getUri().equals("/audio-aac")&&!s.getUri().equals("/video"))return fail(Response.Status.NOT_FOUND,"مسار غير موجود.");
         return super.serve(s);
     }
     static long length(IHTTPSession s,int max)throws Exception{
@@ -57,7 +66,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         if(!image&&source.isFile()){
             MediaMetadataRetriever m=new MediaMetadataRetriever();try{m.setDataSource(source.getPath());media.put("durationMs",videoDuration(source)).put("width",Integer.parseInt(m.extractMetadata(18))).put("height",Integer.parseInt(m.extractMetadata(19)));}catch(Exception ignored){}finally{m.release();}
         }
-        return new JSONObject().put("version","0.3").put("systemAudio",true).put("aacAudio",true).put("ready",root.ready).put("media",media).put("recording",recording).put("record",recordState).put("uploading",uploadBusy).put("screenAgeMs",frameAt==0?-1:SystemClock.elapsedRealtime()-frameAt);
+        return new JSONObject().put("version","0.4").put("h264Screen",true).put("systemAudio",true).put("aacAudio",true).put("ready",root.ready).put("media",media).put("recording",recording).put("record",recordState).put("uploading",uploadBusy).put("screenAgeMs",frameAt==0?-1:SystemClock.elapsedRealtime()-frameAt);
     }
     static long videoDuration(File source)throws Exception{
         MediaExtractor extractor=new MediaExtractor();try{extractor.setDataSource(source.getPath());for(int i=0;i<extractor.getTrackCount();i++){MediaFormat f=extractor.getTrackFormat(i);if(f.getString(MediaFormat.KEY_MIME).startsWith("video/")&&f.containsKey(MediaFormat.KEY_DURATION))return f.getLong(MediaFormat.KEY_DURATION)/1000;}throw new IOException("مدة مسار الفيديو غير معروفة.");}finally{extractor.release();}
@@ -114,7 +123,10 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
     void command(JSONObject c)throws Exception{
         if(!root.ready)throw new IOException("خدمة التحكم لم تبدأ بعد.");
         String type=c.getString("type");
-        if(type.equals("view")){viewing=c.getBoolean("enabled");setStream(client!=null);return;}
+        if(type.equals("view")){viewing=c.getBoolean("enabled");Client current=client;
+            if(current!=null){current.ackFrames=c.optBoolean("frameAck");current.requestedFps=current.ackFrames?Math.max(8,Math.min(24,c.optInt("fps",24))):8;current.window.reset();}
+            setStream(client!=null);return;}
+        if(type.equals("frameAck")){Client current=client;if(current!=null)current.window.acknowledge(c.getLong("sequence"));return;}
         if(type.equals("record")){
             if(recording||uploadBusy)throw new IOException("انتظر انتهاء العملية الحالية.");
             JSONObject media=status().getJSONObject("media");long duration=media.optLong("durationMs",0);
@@ -139,9 +151,15 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         else throw new IOException("أمر غير مدعوم.");
     }
     static void validatePoint(JSONObject c)throws Exception{double x=c.getDouble("x"),y=c.getDouble("y");if(!Double.isFinite(x)||!Double.isFinite(y)||x<0||x>1||y<0||y>1)throw new IOException("موضع اللمس غير صالح.");}
-    void setStream(boolean enabled){setAudio();try{root.send(object("type","stream").put("enabled",enabled&&viewing).put("width",480).put("fps",uploadBusy?1:8));}catch(Exception ignored){}}
+    void setStream(boolean enabled){setAudio();try{root.send(object("type","video").put("enabled",enabled&&viewing&&videoClient!=null));root.send(object("type","stream").put("enabled",enabled&&viewing&&videoClient==null).put("width",480).put("fps",uploadBusy?1:(client==null?8:client.requestedFps)));}catch(Exception ignored){}}
     @Override public void frame(byte[] jpeg){frame=jpeg;frameAt=SystemClock.elapsedRealtime();Client c=client;if(c==null||!c.isOpen()||!sending.compareAndSet(false,true))return;
-        sender.execute(()->{try{c.send(jpeg);}catch(Exception e){c.disconnect();}finally{sending.set(false);}});
+        sender.execute(()->{try{
+            if(c!=client || !viewing)return;
+            if(c.ackFrames){long sequence=c.window.reserve();if(sequence==0)return;
+                java.nio.ByteBuffer packet=java.nio.ByteBuffer.allocate(12+jpeg.length);
+                packet.putInt(0x4e384631).putLong(sequence).put(jpeg);c.send(packet.array());
+            }else c.send(jpeg);
+        }catch(Exception e){c.disconnect();}finally{sending.set(false);}});
     }
     @Override public void event(JSONObject e){String type=e.optString("type");if(type.equals("record")){recordState=e;recording=!e.optString("state").equals("finished");}else if(type.equals("error")){recording=false;recordState=e;}
         Client c=client;if(c!=null&&c.isOpen())sender.execute(()->{try{c.send(e.toString());}catch(Exception ignored){}});
@@ -151,7 +169,27 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         AudioClient c=audioClient;if(c==null||!viewing||client==null||c.aac!=aac)return;
         audioSender.execute(()->{if(c!=audioClient||!viewing)return;try{c.send(pcm);}catch(Exception e){c.disconnect();}});
     }
-    @Override protected WebSocket openWebSocket(IHTTPSession s){return s.getUri().equals("/stream")?new Client(s):new AudioClient(s);}
+    @Override protected WebSocket openWebSocket(IHTTPSession s){return s.getUri().equals("/stream")?new Client(s):s.getUri().equals("/video")?new VideoClient(s):new AudioClient(s);}
+    @Override public void video(byte[] packet){
+        VideoClient c=videoClient;if(c==null||client==null||!viewing)return;
+        boolean key=packet.length>16&&(packet[7]&1)!=0;
+        if(videoPending.get()>=6){c.needsKey=true;try{root.send(object("type","videoKey"));}catch(Exception ignored){}return;}
+        if(c.needsKey&&!key)return;
+        if(key)c.needsKey=false;
+        videoPending.incrementAndGet();
+        videoSender.execute(()->{try{if(c==videoClient&&viewing)c.send(packet);}catch(Exception e){c.disconnect();}finally{videoPending.decrementAndGet();}});
+    }
+    final class VideoClient extends WebSocket {
+        volatile boolean needsKey=true;
+        VideoClient(IHTTPSession s){super(s);}
+        @Override protected void onOpen(){VideoClient old=videoClient;videoClient=this;if(old!=null)old.disconnect();setStream(client!=null);try{root.send(object("type","videoKey"));}catch(Exception ignored){}}
+        void disconnect(){try{close(WebSocketFrame.CloseCode.NormalClosure,"Disconnected",false);}catch(Exception ignored){}closed();}
+        void closed(){if(videoClient==this){videoClient=null;setStream(client!=null);}}
+        @Override protected void onClose(WebSocketFrame.CloseCode code,String reason,boolean remote){closed();}
+        @Override protected void onMessage(WebSocketFrame f){if("key".equals(f.getTextPayload())){try{root.send(object("type","videoKey"));}catch(Exception ignored){}}else disconnect();}
+        @Override protected void onPong(WebSocketFrame p){}
+        @Override protected void onException(IOException e){closed();}
+    }
     final class AudioClient extends WebSocket {
         final boolean aac;
         AudioClient(IHTTPSession s){super(s);aac=s.getUri().equals("/audio-aac");}
@@ -164,14 +202,15 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         @Override protected void onException(IOException e){closed();}
     }
     final class Client extends WebSocket{
+        final FrameWindow window=new FrameWindow();volatile boolean ackFrames;volatile int requestedFps=8;
         Client(IHTTPSession s){super(s);}
         @Override protected void onOpen(){Client old=client;client=this;if(old!=null)old.disconnect();viewing=true;setStream(true);try{send(status().put("type","status").toString());}catch(Exception ignored){}}
         void disconnect(){try{close(WebSocketFrame.CloseCode.NormalClosure,"Disconnected",false);}catch(Exception ignored){}closed();}
-        void closed(){if(client==this){client=null;AudioClient a=audioClient;if(a!=null)a.disconnect();setStream(false);try{root.send(object("type","cancelTouch"));}catch(Exception ignored){}}}
+        void closed(){if(client==this){client=null;VideoClient v=videoClient;if(v!=null)v.disconnect();AudioClient a=audioClient;if(a!=null)a.disconnect();setStream(false);try{root.send(object("type","cancelTouch"));}catch(Exception ignored){}}}
         @Override protected void onClose(WebSocketFrame.CloseCode c,String reason,boolean remote){closed();}
         @Override protected void onMessage(WebSocketFrame f){try{if(f.getTextPayload().length()>8192)throw new IOException("Request too large");JSONObject c=new JSONObject(f.getTextPayload());if(c.optString("type").equals("ping")){send(object("type","pong").toString());return;}command(c);}catch(Exception e){try{send(object("type","error").put("message",e.getMessage()).toString());}catch(Exception ignored){}}}
         @Override protected void onPong(WebSocketFrame p){}
         @Override protected void onException(IOException e){closed();}
     }
-    @Override public void stop(){Client c=client;if(c!=null)c.disconnect();AudioClient a=audioClient;if(a!=null)a.disconnect();super.stop();root.close();sender.shutdownNow();audioSender.shutdownNow();}
+    @Override public void stop(){Client c=client;if(c!=null)c.disconnect();AudioClient a=audioClient;if(a!=null)a.disconnect();VideoClient v=videoClient;if(v!=null)v.disconnect();super.stop();root.close();sender.shutdownNow();audioSender.shutdownNow();videoSender.shutdownNow();}
 }

@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import VideoToolbox
 let data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
 let decoder = try AACDecoder()
 var position = 0, frames = 0, crossings = 0
@@ -78,3 +79,40 @@ precondition(playback.resets == 0, "Actual player queue spuriously flushed")
 precondition(silentFrames == 0 && renderedFrames == 614400, "Unexpected gaps in rendered audio")
 playback.reset(); engine.stop()
 print("Apple rendering integration passed: 12.8 seconds, 614400 frames, zero silent frames, zero queue flushes")
+
+// Validate the real AVC sample builder and decoder with a synthetic 60 fps fixture.
+let videoData = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[2]))
+var accessUnits: [[Data]] = [], access: [Data] = []
+for unit in H264Samples.units(videoData) {
+    if unit.first! & 31 == 9 && !access.isEmpty { accessUnits.append(access); access = [] }
+    access.append(unit)
+}
+if !access.isEmpty { accessUnits.append(access) }
+precondition(accessUnits.count == 60)
+let builder = H264Samples()
+final class VideoCount { var frames = 0; var failures = 0 }
+let decoded = VideoCount()
+var videoSession: VTDecompressionSession?
+for (index, units) in accessUnits.enumerated() {
+    var packet = Data([0x4e,0x38,0x56,0x31,0,0,0,index == 0 ? 1 : 0])
+    var pts = UInt64(index * 1_000_000 / 60).bigEndian
+    withUnsafeBytes(of: &pts) { packet.append(contentsOf: $0) }
+    for unit in units { packet.append(contentsOf: [0,0,0,1]); packet.append(unit) }
+    guard let sample = builder.sample(packet), let description = CMSampleBufferGetFormatDescription(sample) else { fatalError("AVC sample parsing failed") }
+    let size = CMVideoFormatDescriptionGetDimensions(description)
+    precondition(size.width == 360 && size.height == 740)
+    if videoSession == nil {
+        var callback = VTDecompressionOutputCallbackRecord(decompressionOutputCallback: { context, _, status, _, image, _, _ in
+            let counter = Unmanaged<VideoCount>.fromOpaque(context!).takeUnretainedValue()
+            if status == noErr && image != nil { counter.frames += 1 } else { counter.failures += 1 }
+        }, decompressionOutputRefCon: Unmanaged.passUnretained(decoded).toOpaque())
+        precondition(VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: description, decoderSpecification: nil, imageBufferAttributes: nil, outputCallback: &callback, decompressionSessionOut: &videoSession) == noErr)
+    }
+    precondition(VTDecompressionSessionDecodeFrame(videoSession!, sampleBuffer: sample, flags: VTDecodeFrameFlags(rawValue: 0), frameRefcon: nil, infoFlagsOut: nil) == noErr)
+}
+VTDecompressionSessionFinishDelayedFrames(videoSession!)
+VTDecompressionSessionWaitForAsynchronousFrames(videoSession!)
+VTDecompressionSessionInvalidate(videoSession!)
+precondition(decoded.frames == 60 && decoded.failures == 0)
+precondition(builder.sample(Data([0,1,2])) == nil)
+print("AVC integration passed: 60 decoded frames, 360x740, zero decode failures; target rate only, not device capture measurement")

@@ -11,6 +11,17 @@ import UIKit
     @Published var audioMessage = ""
     private var audioSupported = false
     private var aacSupported = false
+    private var videoSupported = false, videoFailed = false
+    let videoPlayer = ScreenVideoPlayer()
+    @Published var videoSize: CGSize?
+    @Published var videoFPS: Double = 0
+    func updateVideo() {
+        if connected && viewingScreen && videoSupported && !videoFailed {
+            videoPlayer.start(host: host, token: token, update: { [weak self] size, fps in
+                Task { @MainActor in guard let self = self, self.connected, self.viewingScreen, !self.videoFailed else { return }; self.videoSize = size; self.videoFPS = fps; self.lastFrame = Date() }
+            }, error: { [weak self] in Task { @MainActor in self?.videoFailed = true; self?.videoSize = nil; self?.error = "تعذّر بث الفيديو السريع؛ يعمل بث الصور مؤقتًا. أعد الاتصال للمحاولة مجددًا." } })
+        } else { videoPlayer.stop(); videoSize = nil; videoFPS = 0 }
+    }
     private let liveAudio = LiveAudio()
     func updateAudio() {
         UserDefaults.standard.set(audioEnabled, forKey: "liveAudio")
@@ -42,6 +53,8 @@ import UIKit
     private var generation = UUID()
     private var outgoing = [Data]()
     private var draining = false
+    private var drainGeneration = UUID()
+    private let frameDecoder = ScreenFrameDecoder()
     private var uploadTask: Task<Void, Never>?
     private let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
@@ -96,6 +109,8 @@ import UIKit
     func applyStatus(_ value: [String: Any]) {
         audioSupported = value["systemAudio"] as? Bool ?? false
         aacSupported = value["aacAudio"] as? Bool ?? false
+        videoSupported = value["h264Screen"] as? Bool ?? false
+        updateVideo()
         updateAudio()
         if let media = value["media"] as? [String: Any] { mediaKind = media["kind"] as? String ?? ""; durationMs = (media["durationMs"] as? NSNumber)?.int64Value ?? 0 }
         if let isRecording = value["recording"] as? Bool { recording = isRecording }
@@ -120,8 +135,8 @@ import UIKit
                 r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 let socket = session.webSocketTask(with: r)
                 socket.maximumMessageSize = 2 * 1024 * 1024
-                task = socket; socket.resume(); connected = true; error = ""; outgoing.removeAll()
-                enqueue(["type": "view", "enabled": viewingScreen])
+                task = socket; socket.resume(); connected = true; videoFailed = false; error = ""; outgoing.removeAll(); draining = false; drainGeneration = UUID()
+                enqueue(["type": "view", "enabled": viewingScreen, "frameAck": true, "fps": 8])
                 heartbeat?.cancel()
                 heartbeat = Task { [weak self] in
                     while !Task.isCancelled {
@@ -135,7 +150,14 @@ import UIKit
                     let message = try await socket.receive()
                     guard id == generation else { return }
                     switch message {
-                    case .data(let bytes): if let frame = UIImage(data: bytes) { image = frame; lastFrame = Date() }
+                    case .data(let bytes):
+                        frameDecoder.submit(bytes) { [weak self] frame, sequence in
+                            Task { @MainActor in
+                                guard let self = self, self.generation == id, self.task === socket, self.connected else { return }
+                                self.image = frame; self.lastFrame = Date()
+                                if let sequence = sequence { self.enqueue(["type": "frameAck", "sequence": sequence]) }
+                            }
+                        }
                     case .string(let text): if let event = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] { applyEvent(event) }
                     @unknown default: break
                     }
@@ -143,7 +165,7 @@ import UIKit
                 return
             } catch {
                 guard id == generation, wantsConnection, !Task.isCancelled else { return }
-                liveAudio.stop(); connected = false; image = nil; self.error = "انقطع الاتصال. جارٍ إعادة المحاولة… " + error.localizedDescription
+                liveAudio.stop(); videoPlayer.stop(); videoSize = nil; connected = false; self.error = "انقطع الاتصال. جارٍ إعادة المحاولة… " + error.localizedDescription
                 task?.cancel(with: .goingAway, reason: nil); heartbeat?.cancel()
                 try? await Task.sleep(nanoseconds: UInt64(retry) * 1_000_000_000)
                 retry = min(15, retry * 2)
@@ -151,17 +173,19 @@ import UIKit
         }
     }
     func disconnect() {
-        liveAudio.stop()
+        liveAudio.stop(); videoPlayer.stop(); videoSize = nil
         wantsConnection = false; generation = UUID(); connectTask?.cancel(); receiveTask?.cancel(); heartbeat?.cancel()
-        task?.cancel(with: .goingAway, reason: nil); task = nil; connected = false; image = nil; outgoing.removeAll()
+        task?.cancel(with: .goingAway, reason: nil); task = nil; connected = false; image = nil; outgoing.removeAll(); draining = false; drainGeneration = UUID()
     }
     func background() { uploadTask?.cancel(); disconnect() }
     func resumeSavedConnection() { if !host.isEmpty && host == UserDefaults.standard.string(forKey: "host") && token == PairingStore.load() && !connected { connect() } }
-    func setViewingScreen(_ enabled: Bool) { viewingScreen = enabled; if connected { enqueue(["type": "view", "enabled": enabled]) }; updateAudio() }
+    func setViewingScreen(_ enabled: Bool) { viewingScreen = enabled; if connected { enqueue(["type": "view", "enabled": enabled, "frameAck": true, "fps": 8]) }; updateAudio(); updateVideo() }
     func applyEvent(_ event: [String: Any]) {
         switch event["type"] as? String {
         case "status": applyStatus(event)
         case "error": error = event["message"] as? String ?? "تعذّر إكمال العملية."; recording = false
+        case "videoStatus":
+            if event["available"] as? Bool == false { videoFailed = true; updateVideo(); error = event["message"] as? String ?? "تعذّر تشغيل بث الفيديو." }
         case "audioStatus": audioMessage = event["available"] as? Bool == true ? "" : (event["message"] as? String ?? "تعذّر بث صوت النظام.")
         case "record":
             let state = (event["state"] as? String) ?? ""
@@ -178,12 +202,14 @@ import UIKit
         outgoing.append(bytes)
         guard !draining else { return }
         draining = true
+        let sendID = drainGeneration
+        guard let socket = task else { draining = false; return }
         Task {
-            defer { draining = false }
-            while !outgoing.isEmpty, let socket = task {
+            defer { if drainGeneration == sendID { draining = false } }
+            while !outgoing.isEmpty, drainGeneration == sendID, connected, task === socket {
                 let data = outgoing.removeFirst()
                 do { try await socket.send(.string(String(decoding: data, as: UTF8.self))) }
-                catch { self.error = "تعذّر إرسال اللمس. أعد الاتصال."; outgoing.removeAll(); break }
+                catch { guard drainGeneration == sendID else { return }; self.error = "تعذّر إرسال اللمس. أعد الاتصال."; outgoing.removeAll(); break }
             }
         }
     }

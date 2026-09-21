@@ -8,6 +8,7 @@ final class LiveAudio: @unchecked Sendable {
     private let playback = AudioPlaybackQueue()
     private var player: AVAudioPlayerNode { playback.player }
     private let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+    private var keepalive: DispatchSourceTimer?
     private var socket: URLSessionWebSocketTask?
     private var session: URLSession?
     private var decoder: AACDecoder?
@@ -40,6 +41,19 @@ final class LiveAudio: @unchecked Sendable {
             socket.maximumMessageSize = 8192; self.socket = socket
             decoder = aac ? try AACDecoder() : nil
             try preparePlayback(); socket.resume()
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now() + 8, repeating: 8)
+            timer.setEventHandler { [weak self, weak socket] in
+                guard let self = self, let socket = socket, self.socket === socket else { return }
+                socket.sendPing { [weak self] error in
+                    guard error != nil, let self = self else { return }
+                    self.queue.async {
+                        guard self.socket === socket else { return }
+                        self.reconnect(host: host, token: token, aac: aac, id: id)
+                    }
+                }
+            }
+            keepalive = timer; timer.resume()
             receive(socket, host: host, token: token, aac: aac, id: id)
         } catch { reconnect(host: host, token: token, aac: aac, id: id) }
     }
@@ -111,6 +125,7 @@ final class LiveAudio: @unchecked Sendable {
     }
     private func resetQueue() { playback.reset() }
     private func closePlayback() {
+        keepalive?.cancel(); keepalive = nil
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         session?.invalidateAndCancel(); session = nil
         resetQueue(); engine.stop(); decoder = nil; clockOffset = nil; latePackets = 0

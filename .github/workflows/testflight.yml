@@ -26,8 +26,8 @@ jobs:
         run: python3 ios/generate_project.py
       - name: Verify AAC decoding before upload
         run: |
-          xcrun swiftc ios/Note8Remote/AACDecoder.swift ios/Note8Remote/AudioPlaybackQueue.swift ios/tests/main.swift -o /tmp/note8-audio-test
-          /tmp/note8-audio-test ios/tests/tone.aac
+          xcrun swiftc ios/Note8Remote/AACDecoder.swift ios/Note8Remote/AudioPlaybackQueue.swift ios/Note8Remote/H264Samples.swift ios/tests/main.swift -o /tmp/note8-audio-test
+          /tmp/note8-audio-test ios/tests/tone.aac ios/tests/screen60.h264
       - name: Archive, sign and upload to Apple
         env:
           CERTIFICATE_BASE64: ${{ secrets.APPLE_P12_BASE64 }}

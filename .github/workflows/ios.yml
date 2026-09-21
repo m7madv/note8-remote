@@ -36,8 +36,8 @@ jobs:
           plutil -lint ios/Note8Remote/Info.plist
       - name: Verify AAC decoding and natural playback speed
         run: |
-          xcrun swiftc ios/Note8Remote/AACDecoder.swift ios/Note8Remote/AudioPlaybackQueue.swift ios/tests/main.swift -o /tmp/note8-audio-test
-          /tmp/note8-audio-test ios/tests/tone.aac
+          xcrun swiftc ios/Note8Remote/AACDecoder.swift ios/Note8Remote/AudioPlaybackQueue.swift ios/Note8Remote/H264Samples.swift ios/tests/main.swift -o /tmp/note8-audio-test
+          /tmp/note8-audio-test ios/tests/tone.aac ios/tests/screen60.h264
       - name: Build device application
         run: |
           xcodebuild -project ios/Note8Remote.xcodeproj -scheme Note8Remote -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build/device CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID" build > build-device.log 2>&1 || { tail -100 build-device.log; exit 1; }
