@@ -5,7 +5,8 @@ import Foundation
 final class LiveAudio: @unchecked Sendable {
     private let queue = DispatchQueue(label: "Note8.LiveAudio", qos: .userInteractive)
     private let engine = AVAudioEngine()
-    private let player = AVAudioPlayerNode()
+    private let playback = AudioPlaybackQueue()
+    private var player: AVAudioPlayerNode { playback.player }
     private let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
     private var socket: URLSessionWebSocketTask?
     private var session: URLSession?
@@ -13,9 +14,6 @@ final class LiveAudio: @unchecked Sendable {
     private var requested = false
     private var configured = false
     private var generation = UUID()
-    private var playbackGeneration = UUID()
-    private var pending = 0
-    private var prerollPackets = 2
     private var lastMessage: String?
     private var clockOffset: Double?
     private var latePackets = 0
@@ -25,7 +23,7 @@ final class LiveAudio: @unchecked Sendable {
     func start(host: String, token: String, aac: Bool) {
         queue.async {
             guard !self.requested else { return }
-            self.requested = true; self.generation = UUID(); self.prerollPackets = 2
+            self.requested = true; self.generation = UUID(); self.playback.reset(newConnection: true)
             self.connect(host: host, token: token, aac: aac, id: self.generation)
         }
     }
@@ -89,28 +87,13 @@ final class LiveAudio: @unchecked Sendable {
             clockOffset = offset
         }
         latePackets = 0
-        // Keep the newest audio after stalls, instead of preserving an old backlog.
-        if pending >= 6 { resetQueue() }
         let buffer: AVAudioPCMBuffer?
         if let decoder = decoder { buffer = try decoder.decode(Data(data.dropFirst(8))) }
         else { buffer = pcm(data) }
         guard let buffer = buffer else { return }
-        pending += 1
-        let playbackID = playbackGeneration
-        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            guard let self = self else { return }
-            self.queue.async {
-                guard self.generation == id, self.playbackGeneration == playbackID else { return }
-                self.pending = max(0, self.pending - 1)
-                if self.pending == 0 {
-                    self.prerollPackets = min(4, self.prerollPackets + 1)
-                    self.resetQueue()
-                }
-            }
-        }
-        // Start at 43 ms; rebuffer up to 85 ms after underruns on variable networks.
-        if pending >= prerollPackets && !player.isPlaying { player.play() }
+        playback.enqueue(buffer)
     }
+
     private func pcm(_ data: Data) -> AVAudioPCMBuffer? {
         guard (data.count - 8) % 4 == 0 else { return nil }
         let count = (data.count - 8) / 4
@@ -126,7 +109,7 @@ final class LiveAudio: @unchecked Sendable {
         }
         return buffer
     }
-    private func resetQueue() { playbackGeneration = UUID(); player.stop(); pending = 0 }
+    private func resetQueue() { playback.reset() }
     private func closePlayback() {
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         session?.invalidateAndCancel(); session = nil
