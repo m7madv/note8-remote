@@ -198,10 +198,13 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         @Override protected void onOpen(){VideoClient old=videoClient;videoClient=this;if(old!=null)old.disconnect();setStream(client!=null);try{root.send(object("type","videoKey"));}catch(Exception ignored){}}
         void disconnect(){try{close(WebSocketFrame.CloseCode.NormalClosure,"Disconnected",false);}catch(Exception ignored){}closed();}
         void closed(){if(videoClient==this){closedAtMs=SystemClock.elapsedRealtime();lastVideoClient=this;videoClient=null;setStream(client!=null);}}
-        @Override protected void onClose(WebSocketFrame.CloseCode code,String reason,boolean remote){closeReason=code+":"+(reason==null?"":reason.substring(0,Math.min(reason.length(),120)));closed();}
+        @Override protected void debugFrameReceived(WebSocketFrame frame){
+            if(frame instanceof WebSocketFrame.CloseFrame){WebSocketFrame.CloseFrame close=(WebSocketFrame.CloseFrame)frame;String reason=close.getCloseReason();closeReason=close.getCloseCode()+":"+(reason==null?"":reason.substring(0,Math.min(reason.length(),120)));}
+        }
+        @Override protected void onClose(WebSocketFrame.CloseCode code,String reason,boolean remote){if(closeReason.isEmpty())closeReason=code+":"+(reason==null?"":reason.substring(0,Math.min(reason.length(),120)));closed();}
         @Override protected void onMessage(WebSocketFrame f){String text=f.getTextPayload();if(text.startsWith("ack:")&&text.length()<32){try{window.acknowledge(Long.parseLong(text.substring(4)));acks.incrementAndGet();lastAckMs=SystemClock.elapsedRealtime();}catch(Exception e){disconnect();}}else if("key".equals(text)){keyRequests.incrementAndGet();try{root.send(object("type","videoKey"));}catch(Exception ignored){}}else disconnect();}
         @Override protected void onPong(WebSocketFrame p){}
-        @Override protected void onException(IOException e){closed();}
+        @Override protected void onException(IOException e){if(closeReason.isEmpty())closeReason="io:"+e.getClass().getSimpleName();closed();}
     }
     final class AudioClient extends WebSocket {
         final boolean aac;
