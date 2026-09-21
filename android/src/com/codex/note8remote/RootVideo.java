@@ -33,12 +33,12 @@ final class RootVideo implements Runnable {
                 MediaFormat format=MediaFormat.createVideoFormat("video/avc",w,h);
                 format.setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
                 int activeBitrate=bitrate;format.setInteger(MediaFormat.KEY_BIT_RATE,activeBitrate);
-                format.setInteger(MediaFormat.KEY_FRAME_RATE,60);
+                format.setInteger(MediaFormat.KEY_FRAME_RATE,30);
                 format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,1);
                 format.setInteger(MediaFormat.KEY_PROFILE,MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline);
                 format.setInteger(MediaFormat.KEY_PRIORITY,0);
-                format.setFloat("max-fps-to-encoder",60);
-                format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,16667);
+                format.setFloat("max-fps-to-encoder",30);
+                format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,33333);
                 codec=MediaCodec.createEncoderByType("video/avc");
                 String name=codec.getName().toLowerCase(java.util.Locale.ROOT);
                 if(name.contains("google")||name.contains("android"))throw new IllegalStateException("Hardware AVC encoder required");
@@ -53,7 +53,7 @@ final class RootVideo implements Runnable {
                     call("setDisplayLayerStack",new Class[]{IBinder.class,int.class},display,stack);
                 }finally{call("closeTransaction",new Class[]{});}
                 codec.start();byte[] config=new byte[0];long check=SystemClock.elapsedRealtime();
-                RootBridge.event(RootBridge.json("videoStatus").put("available",true).put("width",w).put("height",h).put("targetFps",60).put("codec",codec.getName()));
+                RootBridge.event(RootBridge.json("videoStatus").put("available",true).put("width",w).put("height",h).put("targetFps",30).put("codec",codec.getName()));
                 MediaCodec.BufferInfo output=new MediaCodec.BufferInfo();
                 while(RootBridge.alive&&enabled){
                     if(activeBitrate!=bitrate){activeBitrate=bitrate;Bundle rate=new Bundle();rate.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE,activeBitrate);codec.setParameters(rate);requestKey=true;}
