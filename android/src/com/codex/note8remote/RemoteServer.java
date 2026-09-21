@@ -17,6 +17,7 @@ import java.util.concurrent.*;
 final class RemoteServer extends NanoWSD implements RootClient.Listener {
     static final int PORT=8765,CHUNK=512*1024;
     final Context context;final String token;final RootClient root;
+    final android.net.wifi.WifiManager.WifiLock wifiPerformance;
     volatile AudioClient audioClient;
     volatile VideoClient videoClient,lastVideoClient;
     final java.util.concurrent.atomic.AtomicInteger videoPending=new java.util.concurrent.atomic.AtomicInteger();
@@ -36,6 +37,8 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
             }
         });
         this.context=context;token=token(context);root=new RootClient(context,this);
+        android.net.wifi.WifiManager wifi=(android.net.wifi.WifiManager)context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        wifiPerformance=wifi.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF,"note8remote:live");wifiPerformance.setReferenceCounted(false);
     }
     static String token(Context context){SharedPreferences prefs=context.getSharedPreferences("remote",0);String value=prefs.getString("token",null);if(value==null){byte[] b=new byte[24];new SecureRandom().nextBytes(b);value=hex(b);prefs.edit().putString("token",value).commit();}return value;}
     static String hex(byte[] b){StringBuilder s=new StringBuilder();for(byte v:b)s.append(String.format(Locale.ROOT,"%02x",v&255));return s.toString();}
@@ -62,7 +65,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
     static JSONObject bodyJSON(IHTTPSession s)throws Exception{return new JSONObject(new String(body(s,8192),StandardCharsets.UTF_8));}
     JSONObject diagnostics()throws Exception {
         VideoClient activeVideo=videoClient;VideoClient v=activeVideo!=null?activeVideo:lastVideoClient;Client c=client;
-        JSONObject d=new JSONObject().put("control",c!=null).put("video",activeVideo!=null).put("audio",audioClient!=null).put("viewing",viewing).put("videoQueue",videoPending.get());
+        JSONObject d=new JSONObject().put("control",c!=null).put("video",activeVideo!=null).put("audio",audioClient!=null).put("viewing",viewing).put("videoQueue",videoPending.get()).put("wifiPerformance",wifiPerformance.isHeld());
         if(c!=null)d.put("clientAgent",c.agent);
         if(v!=null)d.put("closeReason",v.closeReason).put("closedAtMs",v.closedAtMs).put("ageMs",SystemClock.elapsedRealtime()-v.started).put("encoded",v.encoded.get()).put("sent",v.sent.get()).put("acks",v.acks.get()).put("windowDrops",v.windowDrops.get()).put("queueDrops",v.queueDrops.get()).put("keyWaitDrops",v.keyWaitDrops.get()).put("keyRequests",v.keyRequests.get()).put("waitingKey",v.needsKey).put("windowLimit",v.window.limit()).put("windowPending",v.window.pending()).put("ackRttMs",v.window.rttMs()).put("lastAckMs",v.lastAckMs).put("lastSendMs",v.lastSendMs).put("sendMaxMs",v.sendMaxMs);
         return d;
@@ -73,7 +76,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         if(!image&&source.isFile()){
             MediaMetadataRetriever m=new MediaMetadataRetriever();try{m.setDataSource(source.getPath());media.put("durationMs",videoDuration(source)).put("width",Integer.parseInt(m.extractMetadata(18))).put("height",Integer.parseInt(m.extractMetadata(19)));}catch(Exception ignored){}finally{m.release();}
         }
-        return new JSONObject().put("version","0.6").put("stream",diagnostics()).put("h264Screen",true).put("systemAudio",true).put("aacAudio",true).put("ready",root.ready).put("media",media).put("recording",recording).put("record",recordState).put("uploading",uploadBusy).put("screenAgeMs",frameAt==0?-1:SystemClock.elapsedRealtime()-frameAt);
+        return new JSONObject().put("version","0.7").put("stream",diagnostics()).put("h264Screen",true).put("systemAudio",true).put("aacAudio",true).put("ready",root.ready).put("media",media).put("recording",recording).put("record",recordState).put("uploading",uploadBusy).put("screenAgeMs",frameAt==0?-1:SystemClock.elapsedRealtime()-frameAt);
     }
     static long videoDuration(File source)throws Exception{
         MediaExtractor extractor=new MediaExtractor();try{extractor.setDataSource(source.getPath());for(int i=0;i<extractor.getTrackCount();i++){MediaFormat f=extractor.getTrackFormat(i);if(f.getString(MediaFormat.KEY_MIME).startsWith("video/")&&f.containsKey(MediaFormat.KEY_DURATION))return f.getLong(MediaFormat.KEY_DURATION)/1000;}throw new IOException("مدة مسار الفيديو غير معروفة.");}finally{extractor.release();}
@@ -158,7 +161,10 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         else throw new IOException("أمر غير مدعوم.");
     }
     static void validatePoint(JSONObject c)throws Exception{double x=c.getDouble("x"),y=c.getDouble("y");if(!Double.isFinite(x)||!Double.isFinite(y)||x<0||x>1||y<0||y>1)throw new IOException("موضع اللمس غير صالح.");}
-    void setStream(boolean enabled){setAudio();try{root.send(object("type","video").put("enabled",enabled&&viewing&&videoClient!=null).put("bitrate",uploadBusy?384000:1200000));root.send(object("type","stream").put("enabled",enabled&&viewing&&videoClient==null).put("width",480).put("fps",uploadBusy?1:(client==null?8:client.requestedFps)));}catch(Exception ignored){}}
+    synchronized void keepWifiResponsive(boolean enabled){
+        try{if(enabled&&!wifiPerformance.isHeld())wifiPerformance.acquire();else if(!enabled&&wifiPerformance.isHeld())wifiPerformance.release();}catch(SecurityException e){android.util.Log.w("Note8Remote","Wi-Fi performance lock unavailable");}
+    }
+    void setStream(boolean enabled){keepWifiResponsive(enabled&&viewing);setAudio();try{root.send(object("type","video").put("enabled",enabled&&viewing&&videoClient!=null).put("bitrate",uploadBusy?384000:1200000));root.send(object("type","stream").put("enabled",enabled&&viewing&&videoClient==null).put("width",480).put("fps",uploadBusy?1:(client==null?8:client.requestedFps)));}catch(Exception ignored){}}
     @Override public void frame(byte[] jpeg){frame=jpeg;frameAt=SystemClock.elapsedRealtime();Client c=client;if(c==null||!c.isOpen()||!sending.compareAndSet(false,true))return;
         sender.execute(()->{try{
             if(c!=client || !viewing)return;
@@ -229,5 +235,5 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         @Override protected void onPong(WebSocketFrame p){}
         @Override protected void onException(IOException e){closed();}
     }
-    @Override public void stop(){Client c=client;if(c!=null)c.disconnect();AudioClient a=audioClient;if(a!=null)a.disconnect();VideoClient v=videoClient;if(v!=null)v.disconnect();super.stop();root.close();sender.shutdownNow();audioSender.shutdownNow();videoSender.shutdownNow();}
+    @Override public void stop(){Client c=client;if(c!=null)c.disconnect();AudioClient a=audioClient;if(a!=null)a.disconnect();VideoClient v=videoClient;if(v!=null)v.disconnect();keepWifiResponsive(false);super.stop();root.close();sender.shutdownNow();audioSender.shutdownNow();videoSender.shutdownNow();}
 }
