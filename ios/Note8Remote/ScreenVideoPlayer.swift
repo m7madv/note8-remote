@@ -139,10 +139,18 @@ final class ScreenVideoPlayer: @unchecked Sendable {
                 packets.append(packet)
             }
             guard !packets.isEmpty else { return }
-            var index = 0
+            var index = 0, sequence = 0
+            let bursts = ProcessInfo.processInfo.arguments.contains("--video-bursts")
+            let fixtureFPS = bursts ? 30 : 60
             let timer = DispatchSource.makeTimerSource(queue: self.queue)
-            timer.schedule(deadline: .now()+0.3,repeating: .nanoseconds(16_666_667))
-            timer.setEventHandler { self.display(packets[index]); index = (index+1) % packets.count }
+            timer.schedule(deadline: .now()+0.3,repeating: .nanoseconds(bursts ? 200_000_000 : 16_666_667))
+            timer.setEventHandler {
+                for _ in 0..<(bursts ? 6 : 1) {
+                    var packet = packets[index]; var timestamp = UInt64(sequence*1_000_000/fixtureFPS).bigEndian
+                    withUnsafeBytes(of: &timestamp) { packet.replaceSubrange(8..<16,with: $0) }
+                    self.display(packet); index = (index+1) % packets.count; sequence += 1
+                }
+            }
             self.timer = timer; timer.resume()
         }
     }

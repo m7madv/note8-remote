@@ -101,6 +101,12 @@ jobs:
           xcrun simctl io "$DEVICE" screenshot build/screenshots/hardware-video.png
           cp "$CONTAINER/Documents/video-render-test.json" build/screenshots/video-render-test.json
           python3 -c 'import json; r=json.load(open("build/screenshots/video-render-test.json")); assert r["width"]==360 and r["height"]==740 and r["receivedFPS"]>20, r; print(r)'
+          xcrun simctl terminate "$DEVICE" com.mohammad.note8remote
+          xcrun simctl launch "$DEVICE" com.mohammad.note8remote --video-preview --video-bursts
+          sleep 5
+          xcrun simctl io "$DEVICE" screenshot build/screenshots/hardware-video-bursts.png
+          cp "$CONTAINER/Documents/video-render-test.json" build/screenshots/video-burst-test.json
+          python3 -c 'import json; r=json.load(open("build/screenshots/video-burst-test.json")); assert 25<r["receivedFPS"]<35, r; print(r)'
       - uses: actions/upload-artifact@v4
         with:
           name: Note8Remote-${{ inputs.signing }}
