@@ -151,7 +151,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         else throw new IOException("أمر غير مدعوم.");
     }
     static void validatePoint(JSONObject c)throws Exception{double x=c.getDouble("x"),y=c.getDouble("y");if(!Double.isFinite(x)||!Double.isFinite(y)||x<0||x>1||y<0||y>1)throw new IOException("موضع اللمس غير صالح.");}
-    void setStream(boolean enabled){setAudio();try{root.send(object("type","video").put("enabled",enabled&&viewing&&videoClient!=null));root.send(object("type","stream").put("enabled",enabled&&viewing&&videoClient==null).put("width",480).put("fps",uploadBusy?1:(client==null?8:client.requestedFps)));}catch(Exception ignored){}}
+    void setStream(boolean enabled){setAudio();try{root.send(object("type","video").put("enabled",enabled&&viewing&&videoClient!=null).put("bitrate",uploadBusy?384000:1200000));root.send(object("type","stream").put("enabled",enabled&&viewing&&videoClient==null).put("width",480).put("fps",uploadBusy?1:(client==null?8:client.requestedFps)));}catch(Exception ignored){}}
     @Override public void frame(byte[] jpeg){frame=jpeg;frameAt=SystemClock.elapsedRealtime();Client c=client;if(c==null||!c.isOpen()||!sending.compareAndSet(false,true))return;
         sender.execute(()->{try{
             if(c!=client || !viewing)return;

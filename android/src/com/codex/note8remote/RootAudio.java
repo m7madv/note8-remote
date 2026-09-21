@@ -20,12 +20,7 @@ final class RootAudio implements Runnable {
     synchronized void enable(boolean value, boolean aac) throws Exception {
         if(value && !initialized) {
             // Samsung's AudioRecord JNI requires a non-null operation package.
-            Class<?> type=Class.forName("android.app.ActivityThread");
-            Object thread=type.getMethod("systemMain").invoke(null);
-            Context system=(Context)type.getMethod("getSystemContext").invoke(thread);
-            Context context=system.createPackageContext("com.codex.note8remote",0);
-            Application app=Instrumentation.newApplication(Application.class,context);
-            Field initial=type.getDeclaredField("mInitialApplication");initial.setAccessible(true);initial.set(thread,app);
+            RootRuntime.ensureContext();
             initialized=true;
             Thread worker=new Thread(this,"SystemOutputAudio");worker.setDaemon(true);worker.start();
         }

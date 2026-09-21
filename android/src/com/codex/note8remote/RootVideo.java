@@ -9,8 +9,10 @@ import java.io.ByteArrayOutputStream;
 /** Android 9 hardware surface capture. It never reads or modifies media sources. */
 final class RootVideo implements Runnable {
     volatile boolean enabled, requestKey;
+    volatile int bitrate=1200000;
     private boolean launched;
-    synchronized void enable(boolean value) {
+    synchronized void enable(boolean value) throws Exception {
+        if(value)RootRuntime.ensureContext();
         enabled=value;
         if(value&&!launched){launched=true;Thread t=new Thread(this,"HardwareScreenVideo");t.setDaemon(true);t.start();}
     }
@@ -30,7 +32,7 @@ final class RootVideo implements Runnable {
                 else w=Math.max(2,Math.round((float)sourceW*h/sourceH/2)*2);
                 MediaFormat format=MediaFormat.createVideoFormat("video/avc",w,h);
                 format.setInteger(MediaFormat.KEY_COLOR_FORMAT,MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
-                format.setInteger(MediaFormat.KEY_BIT_RATE,1200000);
+                int activeBitrate=bitrate;format.setInteger(MediaFormat.KEY_BIT_RATE,activeBitrate);
                 format.setInteger(MediaFormat.KEY_FRAME_RATE,60);
                 format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL,1);
                 format.setInteger(MediaFormat.KEY_PROFILE,MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline);
@@ -54,6 +56,7 @@ final class RootVideo implements Runnable {
                 RootBridge.event(RootBridge.json("videoStatus").put("available",true).put("width",w).put("height",h).put("targetFps",60).put("codec",codec.getName()));
                 MediaCodec.BufferInfo output=new MediaCodec.BufferInfo();
                 while(RootBridge.alive&&enabled){
+                    if(activeBitrate!=bitrate){activeBitrate=bitrate;Bundle rate=new Bundle();rate.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE,activeBitrate);codec.setParameters(rate);requestKey=true;}
                     if(requestKey){requestKey=false;Bundle p=new Bundle();p.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME,0);codec.setParameters(p);}
                     int index=codec.dequeueOutputBuffer(output,10000);
                     if(index==MediaCodec.INFO_OUTPUT_FORMAT_CHANGED){
