@@ -93,6 +93,14 @@ jobs:
           xcrun simctl launch "$DEVICE" com.mohammad.note8remote --screen-preview -UIPreferredContentSizeCategoryName UICTContentSizeCategoryAccessibilityXXXL
           sleep 2
           xcrun simctl io "$DEVICE" screenshot build/screenshots/control-fullscreen-large-text.png
+          xcrun simctl terminate "$DEVICE" com.mohammad.note8remote
+          CONTAINER=$(xcrun simctl get_app_container "$DEVICE" com.mohammad.note8remote data)
+          cp ios/tests/screen60.h264 "$CONTAINER/Documents/screen60.h264"
+          xcrun simctl launch "$DEVICE" com.mohammad.note8remote --video-preview
+          sleep 5
+          xcrun simctl io "$DEVICE" screenshot build/screenshots/hardware-video.png
+          cp "$CONTAINER/Documents/video-render-test.json" build/screenshots/video-render-test.json
+          python3 -c 'import json; r=json.load(open("build/screenshots/video-render-test.json")); assert r["width"]==360 and r["height"]==740 and r["receivedFPS"]>20, r; print(r)'
       - uses: actions/upload-artifact@v4
         with:
           name: Note8Remote-${{ inputs.signing }}
@@ -100,6 +108,7 @@ jobs:
             build/*.ipa
             build/*.ipa.enc
             build/screenshots/*.png
+            build/screenshots/*.json
           retention-days: 3
       - name: Upload build logs on failure
         if: failure()

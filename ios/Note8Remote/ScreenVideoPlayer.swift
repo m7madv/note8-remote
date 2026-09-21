@@ -67,4 +67,33 @@ final class ScreenVideoPlayer: @unchecked Sendable {
         session?.invalidateAndCancel(); session = nil; layer.flushAndRemoveImage()
     }
     func stop() { queue.async { self.close() } }
+    #if targetEnvironment(simulator)
+    func playFixture(_ url: URL, update: @escaping @Sendable (CGSize, Double) -> Void) {
+        queue.async {
+            guard let data = try? Data(contentsOf: url) else { return }
+            self.close(); self.requested = true; self.update = update; self.waitingForKey = true; self.samples = H264Samples(); self.reportTime = 0; self.count = 0
+            var units: [[Data]] = [], current: [Data] = []
+            for unit in H264Samples.units(data) {
+                if unit.first! & 31 == 9 && !current.isEmpty { units.append(current); current = [] }
+                current.append(unit)
+            }
+            if !current.isEmpty { units.append(current) }
+            var packets: [Data] = []
+            for (i, access) in units.enumerated() {
+                var packet = Data([0x4e,0x38,0x56,0x31,0,0,0,i == 0 ? 1 : 0])
+                var pts = UInt64(i*1_000_000/60).bigEndian
+                withUnsafeBytes(of: &pts) { packet.append(contentsOf: $0) }
+                for unit in access { packet.append(contentsOf: [0,0,0,1]); packet.append(unit) }
+                packets.append(packet)
+            }
+            guard !packets.isEmpty else { return }
+            var index = 0
+            let timer = DispatchSource.makeTimerSource(queue: self.queue)
+            timer.schedule(deadline: .now()+0.3,repeating: .nanoseconds(16_666_667))
+            timer.setEventHandler { self.display(packets[index]); index = (index+1) % packets.count }
+            self.timer = timer; timer.resume()
+        }
+    }
+    #endif
+
 }

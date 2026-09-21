@@ -36,6 +36,18 @@ struct ContentView: View {
         .onOpenURL { url in model.importPairing(url); tab = 2 }
         .onAppear {
             #if targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--video-preview") {
+                model.connected = true; model.lastFrame = .distantFuture; tab = 0
+                let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                model.videoPlayer.playFixture(directory.appendingPathComponent("screen60.h264")) { size, fps in
+                    Task { @MainActor in
+                        model.videoSize = size; model.videoFPS = fps; model.lastFrame = Date()
+                        let report: [String: Any] = ["width": size.width,"height": size.height,"receivedFPS": fps]
+                        if let data = try? JSONSerialization.data(withJSONObject: report) { try? data.write(to: directory.appendingPathComponent("video-render-test.json")) }
+                    }
+                }
+                return
+            }
             if ProcessInfo.processInfo.arguments.contains("--screen-preview") {
                 model.image = SimulatorScreen.image()
                 model.connected = true
