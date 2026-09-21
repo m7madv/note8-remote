@@ -17,8 +17,7 @@ final class LiveAudio: @unchecked Sendable {
     private var generation = UUID()
     private var lastMessage: String?
     private var clockOffset: Double?
-    private var latePackets = 0
-    private var report: (@Sendable (String) -> Void)?
+        private var report: (@Sendable (String) -> Void)?
 
     func setReporter(_ reporter: @escaping @Sendable (String) -> Void) { queue.async { self.report = reporter } }
     func start(host: String, token: String, aac: Bool) {
@@ -95,12 +94,9 @@ final class LiveAudio: @unchecked Sendable {
         let timestamp = data.prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         let offset = ProcessInfo.processInfo.systemUptime * 1000 - Double(timestamp)
         clockOffset = min(clockOffset ?? offset, offset)
-        if offset - (clockOffset ?? offset) > 180 {
-            resetQueue(); latePackets += 1
-            if latePackets < 3 { return }
-            clockOffset = offset
-        }
-        latePackets = 0
+        // Observed WAN jitter reaches ~230ms. Do not flush natural-speed playback for it.
+        // Rebase only a genuinely stale stream; the bounded render queue handles ordinary bursts.
+        if offset - (clockOffset ?? offset) > 650 { resetQueue(); clockOffset = offset }
         let buffer: AVAudioPCMBuffer?
         if let decoder = decoder { buffer = try decoder.decode(Data(data.dropFirst(8))) }
         else { buffer = pcm(data) }
@@ -128,7 +124,7 @@ final class LiveAudio: @unchecked Sendable {
         keepalive?.cancel(); keepalive = nil
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         session?.invalidateAndCancel(); session = nil
-        resetQueue(); engine.stop(); decoder = nil; clockOffset = nil; latePackets = 0
+        resetQueue(); engine.stop(); decoder = nil; clockOffset = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
     func stop() {

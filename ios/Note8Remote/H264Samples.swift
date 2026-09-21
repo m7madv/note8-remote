@@ -17,7 +17,7 @@ final class H264Samples {
             return end > start.1 ? Data(b[start.1..<end]) : nil
         }
     }
-    func sample(_ packet: Data) -> CMSampleBuffer? {
+    func sample(_ packet: Data, presentationTime: CMTime? = nil) -> CMSampleBuffer? {
         guard packet.count > 16, packet.prefix(4).elementsEqual([0x4e,0x38,0x56,0x31]) else { return nil }
         let pts = packet.dropFirst(8).prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         var avcc = Data(); var hasPicture = false
@@ -42,10 +42,10 @@ final class H264Samples {
         guard CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: nil, blockLength: avcc.count, blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0, dataLength: avcc.count, flags: 0, blockBufferOut: &block) == noErr, let block = block else { return nil }
         let copied = avcc.withUnsafeBytes { CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: avcc.count) }
         guard copied == noErr else { return nil }
-        var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: CMTime(value: Int64(bitPattern: pts), timescale: 1_000_000), decodeTimeStamp: .invalid)
+        var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: presentationTime ?? CMTime(value: Int64(bitPattern: pts), timescale: 1_000_000), decodeTimeStamp: .invalid)
         var size = avcc.count; var sample: CMSampleBuffer?
         guard CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: block, formatDescription: format, sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sample) == noErr, let sample = sample else { return nil }
-        if let a = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true) {
+        if presentationTime == nil, let a = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true) {
             let d = unsafeBitCast(CFArrayGetValueAtIndex(a,0),to: CFMutableDictionary.self)
             CFDictionarySetValue(d, Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
         }

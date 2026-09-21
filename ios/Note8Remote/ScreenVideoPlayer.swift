@@ -8,6 +8,10 @@ final class ScreenVideoPlayer: @unchecked Sendable {
     private var session: URLSession?
     private var timer: DispatchSourceTimer?
     private var samples = H264Samples()
+    private var playout = VideoPlayoutClock()
+    private struct Pending { let sample: CMSampleBuffer; let due: Double; let size: CGSize }
+    private var pending: [Pending] = []
+    private var renderTimer: DispatchSourceTimer?
     private var requested = false, waitingForKey = true
     private var lastPacket: TimeInterval = 0
     private var health = VideoHealth(now: 0)
@@ -21,6 +25,7 @@ final class ScreenVideoPlayer: @unchecked Sendable {
         queue.async {
             guard !self.requested, let url = URL(string: "ws://\(host):8765/video") else { return }
             self.requested = true; self.update = update; self.error = error; self.samples = H264Samples(); self.waitingForKey = true; self.count = 0; self.reportTime = 0
+            guard self.prepareRendering() else { self.fail("timebase-error"); return }
             var request = URLRequest(url: url); request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization"); request.setValue("1", forHTTPHeaderField: "X-Note8-Video-Ack")
             let config = URLSessionConfiguration.ephemeral; config.timeoutIntervalForRequest = 20
             let session = URLSession(configuration: config); self.session = session
@@ -57,30 +62,58 @@ final class ScreenVideoPlayer: @unchecked Sendable {
             }
         }
     }
+    private func prepareRendering() -> Bool {
+        pending.removeAll(); playout = VideoPlayoutClock()
+        let clock = CMClockGetHostTimeClock(); var timebase: CMTimebase?
+        guard CMTimebaseCreateWithSourceClock(allocator: kCFAllocatorDefault, sourceClock: clock, timebaseOut: &timebase) == noErr,
+              let timebase = timebase else { return false }
+        guard CMTimebaseSetTime(timebase, time: CMClockGetTime(clock)) == noErr,
+              CMTimebaseSetRate(timebase, rate: 1) == noErr else { return false }
+        layer.controlTimebase = timebase
+        renderTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(8), leeway: .milliseconds(1))
+        timer.setEventHandler { [weak self] in self?.renderPending() }
+        renderTimer = timer; timer.resume(); return true
+    }
+    private func recoverDecoder() {
+        pending.removeAll(); layer.flush(); waitingForKey = true; playout = VideoPlayoutClock()
+        health.waitForKey(now: ProcessInfo.processInfo.systemUptime)
+        socket?.send(.string("key")) { _ in }
+    }
     private func display(_ data: Data) {
         guard data.count > 16, data.prefix(4).elementsEqual([0x4e,0x38,0x56,0x31]) else { return }
         let pts = data.dropFirst(8).prefix(8).reduce(UInt64(0)) { ($0 << 8) | UInt64($1) }
         socket?.send(.string("ack:\(pts)")) { _ in }
         let key = (data[data.startIndex+7] & 1) != 0
+        if layer.status == .failed || pending.count >= 24 { recoverDecoder() }
         if waitingForKey && !key { return }
-        if layer.status == .failed || !layer.isReadyForMoreMediaData {
-            layer.flush(); waitingForKey = true; health.waitForKey(now: ProcessInfo.processInfo.systemUptime)
-            if !key { socket?.send(.string("key")) { _ in }; return }
-        }
-        guard let sample = samples.sample(data), let format = CMSampleBufferGetFormatDescription(sample) else { return }
-        waitingForKey = false; health.frame(); layer.enqueue(sample); count += 1; lastPacket = ProcessInfo.processInfo.systemUptime
-        let now = ProcessInfo.processInfo.systemUptime
-        if reportTime == 0 || now - reportTime >= 1 {
-            let dimensions = CMVideoFormatDescriptionGetDimensions(format)
-            let fps = reportTime == 0 ? 0 : Double(count)/(now-reportTime)
-            let size = CGSize(width: Int(dimensions.width),height: Int(dimensions.height)); currentSize = size
-            update?(size,fps)
-            count = 0; reportTime = now
+        let now = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
+        let due = playout.presentation(source: Double(pts)/1_000_000, arrival: now)
+        guard let sample = samples.sample(data, presentationTime: CMTime(seconds: due, preferredTimescale: 1_000_000)),
+              let format = CMSampleBufferGetFormatDescription(sample) else { return }
+        let dimensions = CMVideoFormatDescriptionGetDimensions(format)
+        pending.append(Pending(sample: sample, due: due, size: CGSize(width: Int(dimensions.width),height: Int(dimensions.height))))
+        waitingForKey = false; health.frame(); lastPacket = ProcessInfo.processInfo.systemUptime
+        renderPending()
+    }
+    private func renderPending() {
+        guard requested else { return }
+        if layer.status == .failed { recoverDecoder(); return }
+        let hostNow = CMTimeGetSeconds(CMClockGetTime(CMClockGetHostTimeClock()))
+        // Backpressure pauses feeding; it must not flush the H.264 reference chain.
+        while let next = pending.first, next.due <= hostNow + 0.080, layer.isReadyForMoreMediaData {
+            pending.removeFirst(); layer.enqueue(next.sample); count += 1; currentSize = next.size
+            let now = ProcessInfo.processInfo.systemUptime
+            if reportTime == 0 || now-reportTime >= 1 {
+                let fps = reportTime == 0 ? 0 : Double(count)/(now-reportTime)
+                update?(next.size,fps); count = 0; reportTime = now
+            }
         }
     }
     private func fail(_ reason: String) { let notify = error; close(reason); notify?() }
     private func close(_ reason: String = "stopped") {
-        requested = false; timer?.cancel(); timer = nil
+        requested = false; timer?.cancel(); timer = nil; renderTimer?.cancel(); renderTimer = nil; pending.removeAll()
         socket?.cancel(with: .goingAway, reason: Data(reason.utf8)); socket = nil
         session?.invalidateAndCancel(); session = nil; layer.flushAndRemoveImage()
     }
@@ -90,6 +123,7 @@ final class ScreenVideoPlayer: @unchecked Sendable {
         queue.async {
             guard let data = try? Data(contentsOf: url) else { return }
             self.close(); self.requested = true; self.update = update; self.waitingForKey = true; self.samples = H264Samples(); self.reportTime = 0; self.count = 0
+            guard self.prepareRendering() else { return }
             var units: [[Data]] = [], current: [Data] = []
             for unit in H264Samples.units(data) {
                 if unit.first! & 31 == 9 && !current.isEmpty { units.append(current); current = [] }

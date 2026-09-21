@@ -4,12 +4,12 @@ import AVFoundation
 struct AudioQueueState {
     private(set) var scheduledFrames: Int64 = 0
     private(set) var started = false
-    private(set) var prerollFrames: Int64 = 2048
-    static let maximumFrames: Int64 = 6144
+    private(set) var prerollFrames: Int64 = 12288
+    static let maximumFrames: Int64 = 24576
 
     mutating func reset(adapting: Bool = false) {
         scheduledFrames = 0; started = false
-        if adapting { prerollFrames = min(4096, prerollFrames + 1024) }
+        if adapting { prerollFrames = min(16384, prerollFrames + 1024) }
     }
     mutating func accept(frames: Int64, rendered: Int64) -> (reset: Bool, start: Bool) {
         precondition(frames > 0 && frames <= Self.maximumFrames)

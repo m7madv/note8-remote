@@ -39,7 +39,7 @@ for _ in 0..<10 { if oldPending >= 6 { oldPending = 0; oldResets += 1 }; oldPend
 precondition(oldResets > 0)
 // A genuine render starvation adapts preroll; a burst remains bounded.
 let starved = state.accept(frames: 1024, rendered: state.scheduledFrames + 4800)
-precondition(starved.reset && !starved.start && state.prerollFrames == 3072)
+precondition(starved.reset && !starved.start && state.prerollFrames == 13312)
 var burstResets = 0
 for _ in 0..<100 {
     let d = state.accept(frames: 1024, rendered: 0)
@@ -63,7 +63,7 @@ func toneBuffer() -> AVAudioPCMBuffer {
     for c in 0..<2 { for i in 0..<1024 { b.floatChannelData![c][i] = 0.1 } }
     return b
 }
-playback.enqueue(toneBuffer()); playback.enqueue(toneBuffer())
+for _ in 0..<12 { playback.enqueue(toneBuffer()) }
 let renderedBuffer = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: 512)!
 var silentFrames = 0, renderedFrames = 0
 for step in 0..<1200 {
@@ -99,6 +99,13 @@ for (index, units) in accessUnits.enumerated() {
     withUnsafeBytes(of: &pts) { packet.append(contentsOf: $0) }
     for unit in units { packet.append(contentsOf: [0,0,0,1]); packet.append(unit) }
     guard let sample = builder.sample(packet), let description = CMSampleBufferGetFormatDescription(sample) else { fatalError("AVC sample parsing failed") }
+    let targetTime = CMTime(value: Int64(index)*33333+250000, timescale: 1_000_000)
+    guard let paced = builder.sample(packet, presentationTime: targetTime) else { fatalError("Paced sample failed") }
+    precondition(CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(paced),targetTime) == 0)
+    if let attachments = CMSampleBufferGetSampleAttachmentsArray(paced,createIfNecessary: false) {
+        let entry = unsafeBitCast(CFArrayGetValueAtIndex(attachments,0),to: CFDictionary.self)
+        precondition(!CFDictionaryContainsKey(entry,Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque()))
+    }
     let size = CMVideoFormatDescriptionGetDimensions(description)
     precondition(size.width == 360 && size.height == 740)
     if videoSession == nil {
@@ -129,3 +136,39 @@ precondition(health.failure(now: 147) == nil)
 precondition(health.failure(now: 149) == "key-frame-timeout")
 health.frame(); precondition(health.failure(now: 149) == nil)
 print("Video health passed: idle scenes survive, startup/pong/key-frame timeouts detected")
+
+// Bursty video arrivals must retain source cadence, not be displayed in arrival batches.
+var playout = VideoPlayoutClock(); var priorDue: Double?
+for i in 0..<900 {
+    let source = Double(i)/30, arrival = ceil(source/0.200)*0.200
+    let due = playout.presentation(source: source, arrival: arrival)
+    precondition(due >= arrival-0.00001 && due <= arrival+0.251)
+    if let prior = priorDue { precondition(abs(due-prior-1.0/30) < 0.000001) }
+    priorDue = due
+}
+let recoveredDue = playout.presentation(source: 30, arrival: 32)
+precondition(abs(recoveredDue-32.250) < 0.000001, "Late stream must not build unbounded latency")
+print("Video pacing passed: 900 frames with 200ms arrival bursts keep exact 30fps timestamps")
+
+// Actual Apple rendering with 213ms packet bursts; no speaker-speed changes or queue flushes.
+try engine.start(); playback.reset(newConnection: true)
+var nextAudioPacket = 0, startedRendering = false, burstSilent = 0, burstFrames = 0
+for step in 0..<1200 {
+    let now = Double(step)*512/48000
+    while ceil(Double(nextAudioPacket)/10)*10*1024/48000 <= now+0.0000001 {
+        playback.enqueue(toneBuffer()); nextAudioPacket += 1
+    }
+    let active = playback.player.isPlaying
+    let result = try engine.renderOffline(512, to: renderedBuffer)
+    precondition(result == .success)
+    if active {
+        startedRendering = true; burstFrames += Int(renderedBuffer.frameLength)
+        for i in 0..<Int(renderedBuffer.frameLength) {
+            if abs(renderedBuffer.floatChannelData![0][i]) < 0.01 { burstSilent += 1 }
+        }
+    }
+}
+precondition(startedRendering && burstFrames > 500000 && burstSilent == 0 && playback.resets == 0,
+             "Network bursts caused audio silence or a flush: silence=\(burstSilent), resets=\(playback.resets)")
+playback.reset(); engine.stop()
+print("Bursty audio rendering passed: 213ms arrival batches, zero post-start silent frames or resets")
