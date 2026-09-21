@@ -110,3 +110,5 @@
 - مراجع واجهات التنفيذ: [Android MediaFormat](https://developer.android.com/reference/android/media/MediaFormat)، و[SurfaceControl في scrcpy](https://github.com/Genymobile/scrcpy/blob/master/server/src/main/java/com/genymobile/scrcpy/wrappers/SurfaceControl.java)، و[طبقة العرض من Apple](https://developer.apple.com/documentation/avfoundation/avsamplebufferdisplaylayer). إعداد معدل إطارات المرمّز هدف إعداد، وليس قياساً محققاً.
 
 - أُضيفت نافذة نقل فعلية بحد8إطارات غير مؤكدة الوصول، مع تأكيد الطابع الزمني من الآيفون بعد وصول الحزمة إلى مسار العرض. يحمي ذلك من تراكم البيانات في مقبسTCP، وليس فقط صف الإرسال المحلي. اختبار الحدود وتجاهل التأكيدات المستقبلية نجح. المهلة دون إطار قابل للفك5ثوانٍ تعيد البث الاحتياطي.
+
+- نجح بناء الجهاز والتوقيع والرفع في35548392917 على الكود550510f. النسخة0.1(7.1) تحقق أنهاVALID وIN_BETA_TESTING وضمن مجموعة الاختبار. APK0.4 ما زال غير مثبت، ولم يُقَس أداء60إطاراً على النوت.
