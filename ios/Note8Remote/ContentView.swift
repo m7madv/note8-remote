@@ -113,6 +113,7 @@ struct ContentView: View {
                                 .contentShape(Capsule())
                             }
                             .buttonStyle(.plain)
+                            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                             .accessibilityLabel(zoomScale >= 2.5 ? "إعادة الشاشة إلى الحجم الطبيعي" : "زيادة تكبير الشاشة")
                             .accessibilityHint("يمكنك أيضاً التكبير والتحريك بإصبعين")
                             Spacer()
@@ -125,23 +126,30 @@ struct ContentView: View {
             }
     }
     var immersiveScreen: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack {
             Color.black.ignoresSafeArea()
             // Keep the whole remote display inside the safe area so its Android
             // navigation buttons remain reachable around the iPhone sensor housing.
             remoteDisplay
-            Button { fullScreen = false } label: {
-                Image(systemName: "chevron.backward")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 44, height: 44)
-                    .background(.black.opacity(0.8), in: Circle())
-                    .overlay(Circle().strokeBorder(.white.opacity(0.35)))
-                    .contentShape(Circle())
+            VStack {
+                HStack {
+                    Spacer()
+                    Button { fullScreen = false } label: {
+                        Image(systemName: "chevron.backward")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 44, height: 44)
+                            .background(.black.opacity(0.8), in: Circle())
+                            .overlay(Circle().strokeBorder(.white.opacity(0.35)))
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("الرجوع إلى أدوات التحكم")
+                }
+                Spacer()
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("الرجوع إلى أدوات التحكم")
             .padding(8)
+            .environment(\.layoutDirection, .leftToRight)
         }
         .persistentSystemOverlays(.hidden)
     }
