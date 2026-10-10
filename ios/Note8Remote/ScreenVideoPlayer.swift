@@ -36,6 +36,7 @@ final class ScreenVideoPlayer: @unchecked Sendable {
                 guard let self = self, let socket = socket, self.socket === socket else { return }
                 let now = ProcessInfo.processInfo.systemUptime
                 if let reason = self.health.failure(now: now) { self.fail(reason); return }
+                if self.waitingForKey { socket.send(.string("key")) { _ in } }
                 socket.sendPing { [weak self] e in
                     self?.queue.async {
                         guard let self = self, self.socket === socket else { return }

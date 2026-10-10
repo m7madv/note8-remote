@@ -39,10 +39,14 @@ final class RootVideo implements Runnable {
                 format.setInteger(MediaFormat.KEY_PRIORITY,0);
                 format.setFloat("max-fps-to-encoder",30);
                 format.setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,33333);
-                codec=MediaCodec.createEncoderByType("video/avc");
-                String name=codec.getName().toLowerCase(java.util.Locale.ROOT);
-                if(name.contains("google")||name.contains("android"))throw new IllegalStateException("Hardware AVC encoder required");
-                codec.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);surface=codec.createInputSurface();
+                String name;
+                synchronized(RootBridge.codecInitLock){
+                    codec=MediaCodec.createEncoderByType("video/avc");
+                    name=codec.getName().toLowerCase(java.util.Locale.ROOT);
+                    if(name.contains("google")||name.contains("android"))throw new IllegalStateException("Hardware AVC encoder required");
+                    codec.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);surface=codec.createInputSurface();
+                    codec.start();
+                }
                 display=(IBinder)call("createDisplay",new Class[]{String.class,boolean.class},"Note8Remote",false);
                 Object info=RootBridge.displayInfo.invoke(RootBridge.displayManager,0);
                 int stack=info.getClass().getField("layerStack").getInt(info);
@@ -52,7 +56,7 @@ final class RootVideo implements Runnable {
                     call("setDisplayProjection",new Class[]{IBinder.class,int.class,Rect.class,Rect.class},display,0,new Rect(0,0,sourceW,sourceH),new Rect(0,0,w,h));
                     call("setDisplayLayerStack",new Class[]{IBinder.class,int.class},display,stack);
                 }finally{call("closeTransaction",new Class[]{});}
-                codec.start();byte[] config=new byte[0];long check=SystemClock.elapsedRealtime();
+                byte[] config=new byte[0];long check=SystemClock.elapsedRealtime();
                 RootBridge.event(RootBridge.json("videoStatus").put("available",true).put("width",w).put("height",h).put("targetFps",30).put("codec",codec.getName()));
                 MediaCodec.BufferInfo output=new MediaCodec.BufferInfo();
                 while(RootBridge.alive&&enabled){
@@ -75,7 +79,11 @@ final class RootVideo implements Runnable {
                     }finally{codec.releaseOutputBuffer(index,false);}}
                     if(SystemClock.elapsedRealtime()-check>500){RootBridge.dimensions();check=SystemClock.elapsedRealtime();if(RootBridge.rotation!=rotation||RootBridge.width!=sourceW||RootBridge.height!=sourceH)break;}
                 }
-            }catch(Exception e){enabled=false;try{RootBridge.event(RootBridge.json("videoStatus").put("available",false).put("message","تعذّر تشغيل بث الفيديو العتادي؛ سيُستخدم بث الصور مؤقتًا."));}catch(Exception ignored){}}
+            }catch(Exception e){
+                enabled=false;
+                android.util.Log.e("Note8Video","Hardware screen encoder stopped",e);
+                try{RootBridge.event(RootBridge.json("videoStatus").put("available",false).put("message","تعذّر تشغيل بث الفيديو العتادي؛ سيُستخدم بث الصور مؤقتًا."));}catch(Exception ignored){}
+            }
             finally{
                 if(display!=null)try{call("destroyDisplay",new Class[]{IBinder.class},display);}catch(Exception ignored){}
                 if(codec!=null){try{codec.stop();}catch(Exception ignored){}codec.release();}

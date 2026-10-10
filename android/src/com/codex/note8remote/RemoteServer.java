@@ -22,6 +22,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
     volatile VideoClient videoClient,lastVideoClient;
     final java.util.concurrent.atomic.AtomicInteger videoPending=new java.util.concurrent.atomic.AtomicInteger();
     final ExecutorService videoSender=Executors.newSingleThreadExecutor();
+    final ScheduledExecutorService videoRecovery=Executors.newSingleThreadScheduledExecutor();
     final ThreadPoolExecutor audioSender=new ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<Runnable>(4),new ThreadPoolExecutor.DiscardOldestPolicy());
     volatile Client client;volatile byte[] frame;volatile long frameAt;volatile JSONObject recordState=new JSONObject();
     final ExecutorService sender=Executors.newSingleThreadExecutor();
@@ -165,6 +166,19 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         try{if(enabled&&!wifiPerformance.isHeld())wifiPerformance.acquire();else if(!enabled&&wifiPerformance.isHeld())wifiPerformance.release();}catch(SecurityException e){android.util.Log.w("Note8Remote","Wi-Fi performance lock unavailable");}
     }
     void setStream(boolean enabled){keepWifiResponsive(enabled&&viewing);setAudio();try{root.send(object("type","video").put("enabled",enabled&&viewing&&videoClient!=null).put("bitrate",uploadBusy?384000:1200000));root.send(object("type","stream").put("enabled",enabled&&viewing&&videoClient==null).put("width",480).put("fps",uploadBusy?1:(client==null?8:client.requestedFps)));}catch(Exception ignored){}}
+    void recoverVideoStart(VideoClient expected){
+        videoRecovery.schedule(()->{
+            if(videoClient!=expected||!viewing||expected.encoded.get()>0)return;
+            try{root.send(object("type","video").put("enabled",false));}catch(Exception ignored){}
+            videoRecovery.schedule(()->{
+                if(videoClient!=expected||!viewing||expected.encoded.get()>0)return;
+                try{
+                    root.send(object("type","video").put("enabled",true).put("bitrate",uploadBusy?384000:1200000));
+                    root.send(object("type","videoKey"));
+                }catch(Exception ignored){}
+            },250,TimeUnit.MILLISECONDS);
+        },1500,TimeUnit.MILLISECONDS);
+    }
     @Override public void frame(byte[] jpeg){frame=jpeg;frameAt=SystemClock.elapsedRealtime();Client c=client;if(c==null||!c.isOpen()||!sending.compareAndSet(false,true))return;
         sender.execute(()->{try{
             if(c!=client || !viewing)return;
@@ -201,7 +215,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         volatile long lastAckMs,lastSendMs,sendMaxMs,closedAtMs;volatile String closeReason="";
         volatile boolean needsKey=true;final boolean ackRequired;final VideoWindow window=new VideoWindow();
         VideoClient(IHTTPSession s){super(s);ackRequired="1".equals(s.getHeaders().get("x-note8-video-ack"));}
-        @Override protected void onOpen(){VideoClient old=videoClient;videoClient=this;if(old!=null)old.disconnect();setStream(client!=null);try{root.send(object("type","videoKey"));}catch(Exception ignored){}}
+        @Override protected void onOpen(){VideoClient old=videoClient;videoClient=this;if(old!=null)old.disconnect();setStream(client!=null);try{root.send(object("type","videoKey"));}catch(Exception ignored){}recoverVideoStart(this);}
         void disconnect(){try{close(WebSocketFrame.CloseCode.NormalClosure,"Disconnected",false);}catch(Exception ignored){}closed();}
         void closed(){if(videoClient==this){closedAtMs=SystemClock.elapsedRealtime();lastVideoClient=this;videoClient=null;setStream(client!=null);}}
         @Override protected void debugFrameReceived(WebSocketFrame frame){
@@ -235,5 +249,5 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         @Override protected void onPong(WebSocketFrame p){}
         @Override protected void onException(IOException e){closed();}
     }
-    @Override public void stop(){Client c=client;if(c!=null)c.disconnect();AudioClient a=audioClient;if(a!=null)a.disconnect();VideoClient v=videoClient;if(v!=null)v.disconnect();keepWifiResponsive(false);super.stop();root.close();sender.shutdownNow();audioSender.shutdownNow();videoSender.shutdownNow();}
+    @Override public void stop(){Client c=client;if(c!=null)c.disconnect();AudioClient a=audioClient;if(a!=null)a.disconnect();VideoClient v=videoClient;if(v!=null)v.disconnect();keepWifiResponsive(false);super.stop();root.close();sender.shutdownNow();audioSender.shutdownNow();videoSender.shutdownNow();videoRecovery.shutdownNow();}
 }

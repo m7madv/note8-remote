@@ -43,8 +43,10 @@ final class RootAudio implements Runnable {
                     format.setInteger(MediaFormat.KEY_AAC_PROFILE,MediaCodecInfo.CodecProfileLevel.AACObjectLC);
                     format.setInteger(MediaFormat.KEY_BIT_RATE,128000);
                     format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,16384);
-                    encoder=MediaCodec.createEncoderByType("audio/mp4a-latm");
-                    encoder.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);encoder.start();
+                    synchronized(RootBridge.codecInitLock) {
+                        encoder=MediaCodec.createEncoderByType("audio/mp4a-latm");
+                        encoder.configure(format,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE);encoder.start();
+                    }
                 }
                 record.startRecording();
                 long captureStarted=SystemClock.elapsedRealtime(), frames=0;

@@ -23,6 +23,7 @@ public final class RootBridge {
     static Method inject,displayInfo,screenshot;
     static final RootAudio audio=new RootAudio();
     static final RootVideo video=new RootVideo();
+    static final Object codecInitLock=new Object();
     static final Object outputLock=new Object();
     static void packet(int type,byte[] data) throws IOException {
         synchronized(outputLock){
