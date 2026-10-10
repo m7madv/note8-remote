@@ -190,7 +190,7 @@ final class TouchSurface: UIView, UIGestureRecognizerDelegate {
         }
     }
 
-    func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
         guard enabled, !calibrating else { return false }
         if gestureRecognizer === panGesture { return currentZoom > 1.005 }
         return true
