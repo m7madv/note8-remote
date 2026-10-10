@@ -126,12 +126,13 @@ struct ContentView: View {
             }
     }
     var immersiveScreen: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            // Keep the whole remote display inside the safe area so its Android
-            // navigation buttons remain reachable around the iPhone sensor housing.
-            remoteDisplay
-            GeometryReader { proxy in
+        GeometryReader { screen in
+            ZStack {
+                Color.black.ignoresSafeArea()
+                // Keep the whole remote display inside the safe area so its Android
+                // navigation buttons remain reachable around the iPhone sensor housing.
+                remoteDisplay
+                    .frame(width: screen.size.width, height: screen.size.height)
                 Button { fullScreen = false } label: {
                     Image(systemName: "chevron.backward")
                         .font(.system(size: 17, weight: .semibold))
@@ -143,8 +144,9 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("الرجوع إلى أدوات التحكم")
-                .position(x: max(30, proxy.size.width - 30), y: 30)
+                .position(x: max(30, screen.size.width - 30), y: 30)
             }
+            .frame(width: screen.size.width, height: screen.size.height)
             .environment(\.layoutDirection, .leftToRight)
         }
         .persistentSystemOverlays(.hidden)
