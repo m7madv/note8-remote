@@ -131,24 +131,20 @@ struct ContentView: View {
             // Keep the whole remote display inside the safe area so its Android
             // navigation buttons remain reachable around the iPhone sensor housing.
             remoteDisplay
-            VStack {
-                HStack {
-                    Spacer()
-                    Button { fullScreen = false } label: {
-                        Image(systemName: "chevron.backward")
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .frame(width: 44, height: 44)
-                            .background(.black.opacity(0.8), in: Circle())
-                            .overlay(Circle().strokeBorder(.white.opacity(0.35)))
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("الرجوع إلى أدوات التحكم")
+            GeometryReader { proxy in
+                Button { fullScreen = false } label: {
+                    Image(systemName: "chevron.backward")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(.black.opacity(0.8), in: Circle())
+                        .overlay(Circle().strokeBorder(.white.opacity(0.35)))
+                        .contentShape(Circle())
                 }
-                Spacer()
+                .buttonStyle(.plain)
+                .accessibilityLabel("الرجوع إلى أدوات التحكم")
+                .position(x: max(30, proxy.size.width - 30), y: 30)
             }
-            .padding(8)
             .environment(\.layoutDirection, .leftToRight)
         }
         .persistentSystemOverlays(.hidden)
