@@ -221,8 +221,10 @@ import UIKit
     func enqueue(_ command: [String: Any]) {
         guard connected, let bytes = try? JSONSerialization.data(withJSONObject: command) else { return }
         // Keep down/up ordered; coalesce only consecutive move events when the network is slow.
-        if command["type"] as? String == "touch", command["action"] as? Int == 2, let last = outgoing.last,
-           let previous = (try? JSONSerialization.jsonObject(with: last)) as? [String: Any], previous["action"] as? Int == 2 { outgoing.removeLast() }
+        let inputType = command["type"] as? String
+        if (inputType == "touch" || inputType == "multiTouch"), command["action"] as? Int == 2, let last = outgoing.last,
+           let previous = (try? JSONSerialization.jsonObject(with: last)) as? [String: Any],
+           previous["type"] as? String == inputType, previous["action"] as? Int == 2 { outgoing.removeLast() }
         outgoing.append(bytes)
         guard !draining else { return }
         draining = true

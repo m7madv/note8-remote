@@ -7,6 +7,7 @@ import android.os.*;
 import android.net.Uri;
 import fi.iki.elonen.NanoHTTPD;
 import fi.iki.elonen.NanoWSD;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
@@ -148,6 +149,7 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         if(type.equals("stopRecord")){root.send(c);return;}
         if(recording)throw new IOException("التحكم متوقف أثناء التسجيل التلقائي. يمكنك إيقاف التسجيل.");
         if(type.equals("touch")){validatePoint(c);int action=c.getInt("action");if(action!=0&&action!=1&&action!=2&&action!=3)throw new IOException("Invalid touch");root.send(c);}
+        else if(type.equals("multiTouch")){validateMultiTouch(c);root.send(c);}
         else if(type.equals("key")){int k=c.getInt("key");if(k!=3&&k!=4&&k!=187&&k!=224)throw new IOException("Invalid key");root.send(c);}
         else if(type.equals("text")){
             String text=c.getString("text");if(text.length()>2000)throw new IOException("النص طويل جداً.");
@@ -162,6 +164,20 @@ final class RemoteServer extends NanoWSD implements RootClient.Listener {
         else throw new IOException("أمر غير مدعوم.");
     }
     static void validatePoint(JSONObject c)throws Exception{double x=c.getDouble("x"),y=c.getDouble("y");if(!Double.isFinite(x)||!Double.isFinite(y)||x<0||x>1||y<0||y>1)throw new IOException("موضع اللمس غير صالح.");}
+    static void validateMultiTouch(JSONObject command)throws Exception{
+        int action=command.getInt("action"),masked=action&255,index=(action>>8)&255;
+        JSONArray points=command.getJSONArray("points");int count=points.length();
+        if(count<1||count>2||action!=(masked|(index<<8)))throw new IOException("بيانات اللمس المتعدد غير صالحة.");
+        if(masked!=0&&masked!=1&&masked!=2&&masked!=3&&masked!=5&&masked!=6)throw new IOException("حركة اللمس المتعدد غير صالحة.");
+        if((masked==0||masked==1)&&count!=1)throw new IOException("تسلسل اللمس المتعدد غير صالح.");
+        if((masked==5||masked==6)&&(count!=2||index>=count))throw new IOException("مؤشر اللمس المتعدد غير صالح.");
+        if(masked!=5&&masked!=6&&index!=0)throw new IOException("مؤشر اللمس غير صالح.");
+        HashSet<Integer> ids=new HashSet<>();
+        for(int i=0;i<count;i++){
+            JSONObject point=points.getJSONObject(i);int id=point.getInt("id");double x=point.getDouble("x"),y=point.getDouble("y");
+            if(id<0||id>9||!ids.add(id)||!Double.isFinite(x)||!Double.isFinite(y)||x<0||x>1||y<0||y>1)throw new IOException("نقطة لمس متعددة غير صالحة.");
+        }
+    }
     synchronized void keepWifiResponsive(boolean enabled){
         try{if(enabled&&!wifiPerformance.isHeld())wifiPerformance.acquire();else if(!enabled&&wifiPerformance.isHeld())wifiPerformance.release();}catch(SecurityException e){android.util.Log.w("Note8Remote","Wi-Fi performance lock unavailable");}
     }

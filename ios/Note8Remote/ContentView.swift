@@ -11,8 +11,6 @@ struct ContentView: View {
     @State private var showingText = false
     @State private var remoteText = ""
     @State private var showingPreview = false
-    @State private var zoomScale: CGFloat = 1
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("shutterX") private var shutterX = 0.5
     @AppStorage("shutterY") private var shutterY = 0.8
     @AppStorage("shutterCalibrated") private var calibrated = false
@@ -83,7 +81,7 @@ struct ContentView: View {
     var remoteDisplay: some View {
             GeometryReader { proxy in
                 ZStack {
-                    TouchScreen(image: model.image, videoPlayer: model.videoPlayer, videoSize: model.videoSize, enabled: !model.stale && !model.recording, calibrating: calibrating, zoomScale: $zoomScale, reduceMotion: reduceMotion, point: { p in shutterX = p.x; shutterY = p.y; calibrated = true; calibrating = false }, touch: { action, p in model.enqueue(["type": "touch", "action": action, "x": p.x, "y": p.y]) })
+                    TouchScreen(image: model.image, videoPlayer: model.videoPlayer, videoSize: model.videoSize, enabled: !model.stale && !model.recording, calibrating: calibrating, point: { p in shutterX = p.x; shutterY = p.y; calibrated = true; calibrating = false }, touch: { action, points in model.enqueue(["type": "multiTouch", "action": action, "points": points]) })
                     if model.image == nil && model.videoSize == nil {
                         VStack(spacing: 16) {
                             Image(systemName: "iphone.gen1.radiowaves.left.and.right").font(.system(size: 42))
@@ -95,33 +93,6 @@ struct ContentView: View {
                         Text("الصورة متوقفة — جارٍ إعادة الاتصال").font(.callout.weight(.semibold)).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     }
                     if calibrating { VStack { Text("المس وسط زر التسجيل داخل سناب مرة واحدة لتحديد موضعه.").font(.callout.weight(.medium)).padding().background(.regularMaterial); Spacer() }.allowsHitTesting(false) }
-                    VStack {
-                        HStack {
-                            Button {
-                                if zoomScale < 1.5 { zoomScale = 2 }
-                                else if zoomScale < 2.5 { zoomScale = 3 }
-                                else { zoomScale = 1 }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Image(systemName: zoomScale >= 2.5 ? "arrow.counterclockwise" : "plus.magnifyingglass")
-                                    Text(String(format: "%.1f×", zoomScale)).font(.caption.monospacedDigit().weight(.semibold))
-                                }
-                                .foregroundStyle(.white)
-                                .frame(minWidth: 64, minHeight: 44)
-                                .background(.black.opacity(0.78), in: Capsule())
-                                .overlay(Capsule().strokeBorder(.white.opacity(0.3)))
-                                .contentShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-                            .accessibilityLabel(zoomScale >= 2.5 ? "إعادة الشاشة إلى الحجم الطبيعي" : "زيادة تكبير الشاشة")
-                            .accessibilityHint("يمكنك أيضاً التكبير والتحريك بإصبعين")
-                            Spacer()
-                        }
-                        Spacer()
-                    }
-                    .padding(8)
-                    .environment(\.layoutDirection, .leftToRight)
                 }.frame(width: proxy.size.width, height: proxy.size.height).background(.black)
             }
     }

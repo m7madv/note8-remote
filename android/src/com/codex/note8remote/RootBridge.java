@@ -9,6 +9,7 @@ import android.view.MotionEvent;
 import java.io.*;
 import java.lang.reflect.*;
 import java.nio.charset.StandardCharsets;
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 /** Local-only helper. No sockets, no shell command endpoint; stdin closes -> release touch and exit. */
@@ -19,6 +20,8 @@ public final class RootBridge {
     static volatile int width=1080,height=2220,rotation=0,previewWidth=480,fps=8,quality=62;
     static volatile String recordId="";
     static long touchStart=0; static float lastX,lastY;
+    static MotionEvent.PointerProperties[] lastPointerProperties;
+    static MotionEvent.PointerCoords[] lastPointerCoords;
     static Object inputManager,displayManager;
     static Method inject,displayInfo,screenshot;
     static final RootAudio audio=new RootAudio();
@@ -38,15 +41,57 @@ public final class RootBridge {
         width=info.getClass().getField("logicalWidth").getInt(info);height=info.getClass().getField("logicalHeight").getInt(info);
         rotation=info.getClass().getField("rotation").getInt(info);
     }
+    static MotionEvent.PointerProperties pointerProperties(int id){
+        MotionEvent.PointerProperties value=new MotionEvent.PointerProperties();value.id=id;value.toolType=MotionEvent.TOOL_TYPE_FINGER;return value;
+    }
+    static MotionEvent.PointerCoords pointerCoords(float x,float y){
+        MotionEvent.PointerCoords value=new MotionEvent.PointerCoords();value.x=Math.max(0,Math.min(width-1,x));value.y=Math.max(0,Math.min(height-1,y));value.pressure=1;value.size=1;return value;
+    }
+    static void remember(MotionEvent.PointerProperties[] properties,MotionEvent.PointerCoords[] coords,int skip){
+        int count=properties.length-(skip>=0?1:0);
+        if(count<=0){lastPointerProperties=null;lastPointerCoords=null;return;}
+        lastPointerProperties=new MotionEvent.PointerProperties[count];lastPointerCoords=new MotionEvent.PointerCoords[count];
+        for(int source=0,target=0;source<properties.length;source++){
+            if(source==skip)continue;
+            lastPointerProperties[target]=pointerProperties(properties[source].id);
+            lastPointerCoords[target]=pointerCoords(coords[source].x,coords[source].y);target++;
+        }
+    }
+    static synchronized void injectMotion(int action,MotionEvent.PointerProperties[] properties,MotionEvent.PointerCoords[] coords)throws Exception{
+        int masked=action&MotionEvent.ACTION_MASK;
+        if(masked==MotionEvent.ACTION_DOWN&&touchStart!=0)cancelActiveTouch();
+        if(masked!=MotionEvent.ACTION_DOWN&&touchStart==0)return;
+        if(masked==MotionEvent.ACTION_DOWN)touchStart=SystemClock.uptimeMillis();
+        lastX=coords[0].x;lastY=coords[0].y;
+        MotionEvent event=MotionEvent.obtain(touchStart,SystemClock.uptimeMillis(),action,properties.length,properties,coords,0,0,1,1,0,0,0x1002,0);
+        try{
+            if(!Boolean.TRUE.equals(inject.invoke(inputManager,event,0)))throw new IOException("Touch rejected");
+            if(masked==MotionEvent.ACTION_POINTER_UP)remember(properties,coords,(action&MotionEvent.ACTION_POINTER_INDEX_MASK)>>MotionEvent.ACTION_POINTER_INDEX_SHIFT);
+            else if(masked!=MotionEvent.ACTION_UP&&masked!=MotionEvent.ACTION_CANCEL)remember(properties,coords,-1);
+        }finally{
+            event.recycle();
+            if(masked==MotionEvent.ACTION_UP||masked==MotionEvent.ACTION_CANCEL){touchStart=0;lastPointerProperties=null;lastPointerCoords=null;}
+        }
+    }
+    static synchronized void cancelActiveTouch()throws Exception{
+        if(touchStart==0)return;
+        MotionEvent.PointerProperties[] properties=lastPointerProperties;
+        MotionEvent.PointerCoords[] coords=lastPointerCoords;
+        if(properties==null||coords==null||properties.length==0){properties=new MotionEvent.PointerProperties[]{pointerProperties(0)};coords=new MotionEvent.PointerCoords[]{pointerCoords(lastX,lastY)};}
+        injectMotion(MotionEvent.ACTION_CANCEL,properties,coords);
+    }
     static synchronized void touch(int action,float x,float y) throws Exception {
-        if(action==0 && touchStart!=0) touch(1,lastX,lastY);
-        if(action!=0 && touchStart==0)return;
-        if(action==0)touchStart=SystemClock.uptimeMillis();
-        lastX=Math.max(0,Math.min(width-1,x));lastY=Math.max(0,Math.min(height-1,y));
-        MotionEvent e=MotionEvent.obtain(touchStart,SystemClock.uptimeMillis(),action,lastX,lastY,action==1?0:1,1,0,1,1,0,0);
-        e.setSource(0x1002);
-        try { if(!Boolean.TRUE.equals(inject.invoke(inputManager,e,0)))throw new IOException("Touch rejected"); }
-        finally{e.recycle();if(action==1||action==3)touchStart=0;}
+        injectMotion(action,new MotionEvent.PointerProperties[]{pointerProperties(0)},new MotionEvent.PointerCoords[]{pointerCoords(x,y)});
+    }
+    static synchronized void multiTouch(JSONObject command)throws Exception{
+        JSONArray points=command.getJSONArray("points");int count=points.length();
+        MotionEvent.PointerProperties[] properties=new MotionEvent.PointerProperties[count];
+        MotionEvent.PointerCoords[] coords=new MotionEvent.PointerCoords[count];
+        for(int i=0;i<count;i++){
+            JSONObject point=points.getJSONObject(i);properties[i]=pointerProperties(point.getInt("id"));
+            coords[i]=pointerCoords((float)point.getDouble("x")*width,(float)point.getDouble("y")*height);
+        }
+        injectMotion(command.getInt("action"),properties,coords);
     }
     static void key(int key) throws Exception {
         long now=SystemClock.uptimeMillis();
@@ -66,7 +111,7 @@ public final class RootBridge {
         if(duration<500 || duration>60000)throw new IOException("مدة التسجيل المدعومة من 0.5 إلى 60 ثانية.");
         final String id=command.getString("id");if(!id.matches("[a-fA-F0-9-]{16,64}"))throw new IOException("Invalid session");
         dimensions();final float x=(float)command.getDouble("x")*width,y=(float)command.getDouble("y")*height;
-        if(touchStart!=0)touch(1,lastX,lastY);
+        if(touchStart!=0)cancelActiveTouch();
         recordId=id;autoRecording=true;
         write(new File(DIR,"remote-record-request.json"),new JSONObject().put("id",id).put("issuedMs",SystemClock.elapsedRealtime()).toString());
         new Thread(()->{
@@ -117,8 +162,9 @@ public final class RootBridge {
                     else if(type.equals("videoKey")){video.requestKey=true;}
                     else if(type.equals("audio")){try{audio.enable(c.optBoolean("enabled"),c.optBoolean("aac"));}catch(Exception e){event(json("audioStatus").put("available",false).put("message","تعذّر بدء صوت النظام."));}}
                     else if(type.equals("touch")&&!autoRecording)touch(c.getInt("action"),(float)c.getDouble("x")*width,(float)c.getDouble("y")*height);
-                    else if(type.equals("cancelTouch")&&!autoRecording)touch(1,lastX,lastY);
-                    else if(type.equals("stopRecord")){autoRecording=false;touch(1,lastX,lastY);}
+                    else if(type.equals("multiTouch")&&!autoRecording)multiTouch(c);
+                    else if(type.equals("cancelTouch")&&!autoRecording)cancelActiveTouch();
+                    else if(type.equals("stopRecord")){autoRecording=false;cancelActiveTouch();}
                     else if(type.equals("key")&&!autoRecording){int k=c.getInt("key");if(k==3||k==4||k==187||k==279||k==224)key(k);}
                     else if(type.equals("record"))record(c);
                     else if(type.equals("open")&&!autoRecording){
@@ -130,6 +176,6 @@ public final class RootBridge {
                     }
                 }catch(Exception e){error(e.getMessage()==null?"تعذّر تنفيذ الأمر.":e.getMessage());}
             }
-        }finally{alive=false;autoRecording=false;try{touch(1,lastX,lastY);}catch(Exception ignored){}System.exit(0);}
+        }finally{alive=false;autoRecording=false;try{cancelActiveTouch();}catch(Exception ignored){}System.exit(0);}
     }
 }
