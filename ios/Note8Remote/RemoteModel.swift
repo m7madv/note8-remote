@@ -4,8 +4,20 @@ import CryptoKit
 import UIKit
 
 @MainActor final class RemoteModel: ObservableObject {
-    @Published var host = UserDefaults.standard.string(forKey: "host") ?? ""
-    @Published var token = PairingStore.load()
+    @Published private(set) var nearby = UserDefaults.standard.bool(forKey: "nearbyMode")
+    @Published var host = UserDefaults.standard.string(forKey: UserDefaults.standard.bool(forKey: "nearbyMode") ? "nearbyHost" : "host") ?? ""
+    @Published var token = PairingStore.load(nearby: UserDefaults.standard.bool(forKey: "nearbyMode"))
+    private var hostKey: String { nearby ? "nearbyHost" : "host" }
+
+    func selectNearby(_ value: Bool) {
+        guard nearby != value, !uploading, !recording else { return }
+        disconnect()
+        nearby = value
+        UserDefaults.standard.set(value, forKey: "nearbyMode")
+        host = UserDefaults.standard.string(forKey: hostKey) ?? ""
+        token = PairingStore.load(nearby: value)
+        error = ""
+    }
     @Published var connected = false
     @Published var audioEnabled = UserDefaults.standard.object(forKey: "liveAudio") as? Bool ?? true
     @Published var audioMessage = ""
@@ -50,7 +62,8 @@ import UIKit
     func updateAudio() {
         UserDefaults.standard.set(audioEnabled, forKey: "liveAudio")
         liveAudio.setReporter { [weak self] message in Task { @MainActor in self?.audioMessage = message } }
-        if connected && viewingScreen && audioEnabled && audioSupported { liveAudio.start(host: (try? Self.normalizedHost(host)) ?? host, token: token, aac: aacSupported) }
+        if connected && viewingScreen && audioEnabled && audioSupported,
+           let address = try? Self.normalizedHost(host, nearby: nearby) { liveAudio.start(host: address, token: token, aac: aacSupported) }
         else { liveAudio.stop() }
     }
     @Published var image: UIImage?
@@ -89,25 +102,36 @@ import UIKit
     }()
     var stale: Bool { !connected || Date().timeIntervalSince(lastFrame) > 4 }
     var canRecord: Bool { connected && !stale && !uploading && !recording && mediaKind == "video" && durationMs >= 500 && durationMs <= 60_000 }
-    static func normalizedHost(_ input: String) throws -> String {
+    static func normalizedHost(_ input: String, nearby: Bool = false) throws -> String {
         let host = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        let parts = host.split(separator: ".").compactMap { Int($0) }
-        guard parts.count == 4, host.split(separator: ".").count == 4,
-              parts.allSatisfy({ (0...255).contains($0) }), parts[0] == 100, (64...127).contains(parts[1]) else {
-            throw RemoteError.message("أدخل عنوان النوت من Tailscale، مثل 100.80.20.10.")
+        let octets = host.split(separator: ".", omittingEmptySubsequences: false)
+        let parts = octets.compactMap { part -> Int? in
+            guard (1...3).contains(part.count), part.utf8.allSatisfy({ (48...57).contains($0) }) else { return nil }
+            return Int(part)
+        }
+        guard octets.count == 4, parts.count == 4, parts.allSatisfy({ (0...255).contains($0) }) else {
+            throw RemoteError.message("أدخل عنوان الهاتف الظاهر في تطبيق التحكم.")
+        }
+        let local = parts[0] == 10 || (parts[0] == 172 && (16...31).contains(parts[1])) || (parts[0] == 192 && parts[1] == 168)
+        let tailnet = parts[0] == 100 && (64...127).contains(parts[1])
+        guard nearby ? local : tailnet else {
+            throw RemoteError.message(nearby ? "أدخل عنوان نقطة الاتصال المحلية." : "أدخل عنوان الهاتف من Tailscale.")
         }
         return parts.map(String.init).joined(separator: ".")
     }
     func savePairing() throws {
-        host = try Self.normalizedHost(host)
+        host = try Self.normalizedHost(host, nearby: nearby)
         token = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard token.count == 48, token.allSatisfy({ $0.isHexDigit }) else { throw RemoteError.message("ألصق رمز الاقتران الكامل من تطبيق النوت.") }
-        try PairingStore.save(token)
-        UserDefaults.standard.set(host, forKey: "host")
+        guard token.count == (nearby ? 24 : 48), token.allSatisfy({ $0.isASCII && $0.isHexDigit }) else { throw RemoteError.message("أدخل رمز الربط الكامل الظاهر في تطبيق الهاتف.") }
+        if nearby { token = token.lowercased() }
+        try PairingStore.save(token, nearby: nearby)
+        UserDefaults.standard.set(host, forKey: hostKey)
     }
     func importPairing(_ url: URL) {
-        guard url.scheme == "note8remote", url.host == "pair", let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        guard !uploading, !recording, url.scheme == "note8remote", url.host == "pair",
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
         uploadTask?.cancel(); disconnect()
+        selectNearby(components.queryItems?.first(where: { $0.name == "mode" })?.value == "nearby")
         let items = components.queryItems ?? []
         host = items.first(where: { $0.name == "host" })?.value ?? ""
         token = items.first(where: { $0.name == "token" })?.value ?? ""
@@ -115,7 +139,7 @@ import UIKit
     }
     func request(_ path: String, method: String = "GET", data: Data? = nil) async throws -> [String: Any] {
         try Task.checkCancellation()
-        let address = try Self.normalizedHost(host)
+        let address = try Self.normalizedHost(host, nearby: nearby)
         guard let url = URL(string: "http://\(address):8765\(path)") else { throw RemoteError.message("عنوان غير صالح.") }
         var r = URLRequest(url: url)
         r.httpMethod = method
@@ -202,7 +226,7 @@ import UIKit
         task?.cancel(with: .goingAway, reason: nil); task = nil; connected = false; image = nil; outgoing.removeAll(); draining = false; drainGeneration = UUID()
     }
     func background() { uploadTask?.cancel(); disconnect() }
-    func resumeSavedConnection() { if !host.isEmpty && host == UserDefaults.standard.string(forKey: "host") && token == PairingStore.load() && !connected { connect() } }
+    func resumeSavedConnection() { if !host.isEmpty && host == UserDefaults.standard.string(forKey: hostKey) && token == PairingStore.load(nearby: nearby) && !connected { connect() } }
     func setViewingScreen(_ enabled: Bool) { if !enabled { cancelVideoRetry() }; if enabled && !viewingScreen { videoFailed = false }; viewingScreen = enabled; if connected { enqueue(["type": "view", "enabled": enabled, "frameAck": true, "fps": 8]) }; updateAudio(); updateVideo() }
     func applyEvent(_ event: [String: Any]) {
         switch event["type"] as? String {
@@ -250,7 +274,7 @@ import UIKit
         Task {
             defer { downloadingPreview = false }
             do {
-                let address = try Self.normalizedHost(host)
+                let address = try Self.normalizedHost(host, nearby: nearby)
                 var r = URLRequest(url: URL(string: "http://\(address):8765/output")!)
                 r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 let (temp, response) = try await session.download(for: r)

@@ -86,7 +86,7 @@ struct ContentView: View {
                         VStack(spacing: 16) {
                             Image(systemName: "iphone.gen1.radiowaves.left.and.right").font(.system(size: 42))
                             Text("ستظهر شاشة النوت هنا").font(.headline)
-                            Text("شغّل الخدمة وTailscale على الهاتفين، ثم اتصل.").font(.subheadline).multilineTextAlignment(.center)
+                            Text(model.nearby ? "انضم إلى نقطة اتصال الهاتف الخاصة، ثم اتصل." : "شغّل خدمة التحكم وTailscale، ثم اتصل.").font(.subheadline).multilineTextAlignment(.center)
                             Button("إعداد الاتصال") { tab = 2 }.buttonStyle(.borderedProminent)
                         }.foregroundStyle(.white).padding(24)
                     } else if model.stale {
@@ -194,11 +194,20 @@ struct ContentView: View {
         Form {
             Section { errorBanner }
             Section {
-                TextField("عنوان النوت في Tailscale", text: $model.host).keyboardType(.numbersAndPunctuation).textInputAutocapitalization(.never).autocorrectionDisabled().environment(\.layoutDirection, .leftToRight).accessibilityLabel("عنوان النوت في Tailscale")
+                Picker("طريقة الاتصال", selection: Binding(get: { model.nearby }, set: { model.selectNearby($0) })) {
+                    Text("اتصال بعيد").tag(false)
+                    Text("قريب بلا إنترنت").tag(true)
+                }.pickerStyle(.segmented).disabled(model.uploading || model.recording)
+                let addressLabel = model.nearby ? "العنوان المحلي للهاتف" : "عنوان الهاتف في Tailscale"
+                TextField(addressLabel, text: $model.host).keyboardType(.numbersAndPunctuation).textInputAutocapitalization(.never).autocorrectionDisabled().environment(\.layoutDirection, .leftToRight).accessibilityLabel(addressLabel)
                 SecureField("رمز الاقتران", text: $model.token).textContentType(.password).textInputAutocapitalization(.never).autocorrectionDisabled().environment(\.layoutDirection, .leftToRight)
                 Button("لصق رابط الربط") { if let text = UIPasteboard.general.string, let url = URL(string: text) { model.importPairing(url) } }
                 Button(model.connected ? "إعادة الاتصال" : "حفظ واتصال") { model.connect(); tab = 0 }.frame(minHeight: 44)
-            } header: { Text("ربط الهاتفين") } footer: { Text("ثبّت Tailscale وسجّل الدخول إلى الحساب نفسه على الهاتفين. انسخ العنوان والرمز من تطبيق «التحكم بالنوت». لا يحتاج التشغيل اليومي إلى كمبيوتر.") }
+            } header: { Text("ربط الهاتفين") } footer: {
+                Text(model.nearby
+                    ? "شغّل نقطة الاتصال الخاصة من تطبيق التحكم على ريد ماجيك. انضم إلى شبكتها من إعدادات الواي فاي في الآيفون، ثم أدخل العنوان ورمز الربط المحلي. اسمح للتطبيق بالوصول إلى الشبكة المحلية."
+                    : "أدخل عنوان Tailscale ورمز الاقتران من تطبيق التحكم على الهاتف.")
+            }
             Section("صوت الهاتف") {
                 Toggle("سماع صوت النوت مباشرة", isOn: $model.audioEnabled)
                     .onChange(of: model.audioEnabled) { _ in model.updateAudio() }
